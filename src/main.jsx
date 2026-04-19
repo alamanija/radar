@@ -16,17 +16,15 @@ if (!PUBLISHABLE_KEY) {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <ClerkProvider
-      publishableKey={PUBLISHABLE_KEY}
-      // After any sign-in / sign-up flow, Clerk redirects the browser to
-      // one of these URLs. We use "/" — the Tauri webview and the Vite
-      // preview both land back in the root of the app, which is where
-      // the React tree boots. Without these, Clerk falls back to its
-      // own hosted account page after sign-in and users end up stuck
-      // on accounts.<instance>.clerk.accounts.dev.
-      signInFallbackRedirectUrl="/"
-      signUpFallbackRedirectUrl="/"
-    >
+    <ClerkProvider publishableKey={PUBLISHABLE_KEY}>
+      {/* No fallback redirect URLs: sign-in runs through
+          `<SignIn routing="virtual" />` in SettingsView, which flips the
+          React context in-place. A redirect here would force a full page
+          reload, and in Tauri's webview the dev Clerk session doesn't
+          survive that reload (third-party cookie on *.clerk.accounts.dev
+          is blocked and the `__clerk_db_jwt` URL param gets dropped
+          across the `tauri://localhost` navigation), so the user lands
+          back on a freshly-initialised, signed-out Clerk. */}
       <App />
     </ClerkProvider>
   </StrictMode>
