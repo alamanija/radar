@@ -1,6 +1,10 @@
-# Radar
+<p align="center">
+  <img src="./src-tauri/icons/128x128@2x.png" alt="Radar" width="96" height="96" />
+</p>
 
-A personalized design-news briefing, delivered to your desktop each morning.
+<h1 align="center">Radar</h1>
+
+<p align="center">A personalized design-news briefing, delivered to your desktop each morning.</p>
 
 [![Release](https://github.com/alamanija/radar/actions/workflows/release.yml/badge.svg)](https://github.com/alamanija/radar/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/alamanija/radar?include_prereleases&sort=semver)](https://github.com/alamanija/radar/releases/latest)
@@ -88,6 +92,10 @@ Radar is free and open-source. If it earns a spot on your dock, tip the jar so t
 <a href="https://ko-fi.com/alamanija" target="_blank">
   <img src="https://storage.ko-fi.com/cdn/kofi_button_red.png" alt="Support me on Ko-fi" height="44" />
 </a>
+
+## Security
+
+Found a security issue? Please **don't open a public GitHub issue.** See [SECURITY.md](./SECURITY.md) for the private-disclosure process (GitHub Security Advisories or `security@getradar.xyz`).
 
 ## License
 
