@@ -5,6 +5,8 @@ import { RADAR_DATA } from './data.js';
 import { loadSnapshot, setItem } from './storage.js';
 import { makeSyncFetch, SYNC_BASE } from './sync.js';
 import { installSyncQueue } from './syncQueue.js';
+import { onTrayRunBriefing, pushTrayStatus } from './tray.js';
+import { notifyBriefingComplete } from './notify.js';
 import { useSyncedResource } from './hooks/useSyncedResource.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { Header } from './components/Header.jsx';
@@ -472,6 +474,30 @@ export default function App() {
     setItem('categories', categories);
   }, [ready, categories]);
 
+  // Tray status: unread count + relative last-run time. Re-pushed whenever
+  // articles change (toggling read) or a new briefing lands.
+  useEffect(() => {
+    if (!ready) return;
+    const unread = articles.reduce((n, a) => n + (a.read ? 0 : 1), 0);
+    const lastRunAt = archives[0]?.runAt ? Date.parse(archives[0].runAt) : null;
+    pushTrayStatus({ unread, lastRunAt });
+  }, [ready, articles, archives]);
+
+  // Tray "Run briefing now" → trigger a briefing via the live ref so the
+  // handler always sees current sources/categories/lens.
+  useEffect(() => {
+    let unlisten = () => {};
+    let cancelled = false;
+    onTrayRunBriefing(() => onBriefingRef.current?.()).then((off) => {
+      if (cancelled) off();
+      else unlisten = off;
+    });
+    return () => {
+      cancelled = true;
+      unlisten();
+    };
+  }, []);
+
   const applyArticleStates = (xs) => xs.map(a => {
     const s = articleStatesRef.current.get(String(a.id));
     return s ? { ...a, read: !!s.read, bookmarked: !!s.bookmarked } : a;
@@ -510,6 +536,7 @@ export default function App() {
       const categoriesPayload = categories.map(c => ({
         id: c.id, label: c.label, description: c.description, accent: c.accent,
       }));
+      const prevIds = new Set(articles.map(a => a.id));
       const resp = await invoke('ingest_briefing', {
         sources: sourcesPayload,
         categories: categoriesPayload,
@@ -518,6 +545,14 @@ export default function App() {
       setArticles(applyArticleStates(resp.articles));
       setBriefingErrors(resp.errors ?? []);
       archiveBriefing(resp.articles, resp.errors ?? []);
+
+      const newCount = resp.articles.reduce((n, a) => n + (prevIds.has(a.id) ? 0 : 1), 0);
+      const sourceCount = new Set(resp.articles.map(a => a.source)).size;
+      notifyBriefingComplete({
+        newCount,
+        totalCount: resp.articles.length,
+        sourceCount,
+      });
 
       // Stamp per-source health: warn for anything in the errors array (excluding
       // the synthetic source_id=0 used for Claude-summarization failures),

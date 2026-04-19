@@ -10,7 +10,8 @@
       "Bash(cargo check *)",
       "Bash(cargo tree *)",
       "Bash(gh api *)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(cargo add *)"
     ]
   }
 }

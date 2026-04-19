@@ -8,6 +8,7 @@
     "store:default",
     "opener:default",
     "updater:default",
-    "process:default"
+    "process:default",
+    "notification:default"
   ]
 }
