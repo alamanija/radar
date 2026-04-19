@@ -5,7 +5,7 @@ import { RADAR_DATA } from './data.js';
 import { getItem, loadSnapshot, setItem } from './storage.js';
 import { makeSyncFetch, SYNC_BASE } from './sync.js';
 import { installSyncQueue } from './syncQueue.js';
-import { onTrayRunBriefing, pushTrayArticles, pushTrayStatus } from './tray.js';
+import { onTrayRunBriefing, pushTrayStatus } from './tray.js';
 import { notifyBriefingComplete } from './notify.js';
 import { logger } from './log.js';
 import { useSyncedResource } from './hooks/useSyncedResource.js';
@@ -510,21 +510,16 @@ export default function App() {
     setItem('categories', categories);
   }, [ready, categories]);
 
-  // Tray status: unread count + relative last-run time. Re-pushed whenever
-  // articles change (toggling read) or a new briefing lands.
+  // Tray tooltip + compact title. Re-pushed whenever articles change
+  // (toggling read) or a new briefing lands. The frontend assembles the
+  // full tooltip string — unread count, last-run time, top headlines —
+  // and Rust just writes it to the tray.
   useEffect(() => {
     if (!ready) return;
     const unread = articles.reduce((n, a) => n + (a.read ? 0 : 1), 0);
     const lastRunAt = archives[0]?.runAt ? Date.parse(archives[0].runAt) : null;
-    pushTrayStatus({ unread, lastRunAt });
+    pushTrayStatus({ unread, lastRunAt, articles });
   }, [ready, articles, archives]);
-
-  // Tray menu: top N article titles as click-through items. Re-pushed on
-  // every briefing so the menu always reflects the latest run.
-  useEffect(() => {
-    if (!ready) return;
-    pushTrayArticles(articles);
-  }, [ready, articles]);
 
   // Tray "Run briefing now" → trigger a briefing via the live ref so the
   // handler always sees current sources/categories/lens.

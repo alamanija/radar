@@ -78,14 +78,10 @@ pub fn run() {
             scheduler::spawn(app.handle().clone());
 
             let window = main.clone();
-            let app_handle = app.handle().clone();
             main.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
-                    // Rebuild tray menu so the Show/Hide label follows the
-                    // window's real state after close-to-tray.
-                    tray::on_window_hidden(&app_handle);
                 }
             });
 
@@ -100,7 +96,6 @@ pub fn run() {
             keychain::get_clerk_db_jwt,
             keychain::clear_clerk_db_jwt,
             tray::set_tray_status,
-            tray::set_tray_articles,
             schedule_wake::sync_schedule_wake,
         ])
         .build(tauri::generate_context!())
