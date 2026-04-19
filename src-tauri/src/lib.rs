@@ -5,7 +5,9 @@ mod scheduler;
 mod summarize;
 mod tray;
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, WindowEvent};
+#[cfg(target_os = "macos")]
+use tauri::RunEvent;
 use tauri_plugin_autostart::MacosLauncher;
 
 /// CLI flag the autostart plugin passes when the app is launched by the OS
@@ -107,11 +109,15 @@ pub fn run() {
             // macOS: fired when the user clicks a notification banner, the
             // dock icon, or otherwise activates Radar while the window is
             // hidden. Surface the main window so they don't land on a
-            // silent no-op.
+            // silent no-op. `RunEvent::Reopen` is a macOS-only variant —
+            // on Windows/Linux the match arm is cfg'd out.
+            #[cfg(target_os = "macos")]
             if let RunEvent::Reopen { has_visible_windows, .. } = event {
                 if !has_visible_windows {
                     tray::surface_main_window(app);
                 }
             }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         });
 }
