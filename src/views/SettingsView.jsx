@@ -303,8 +303,9 @@ function AccountControl() {
             the Clerk-hosted iframe being readable from the app's
             top-level origin — WebKit (and Tauri's macOS webview) isolate
             these. Redirect flow keeps auth on the app origin so session
-            state survives. */}
-        <SignInButton forceRedirectUrl={window.location.href}>
+            state survives. Redirect destination is configured on
+            ClerkProvider (`signInFallbackRedirectUrl`). */}
+        <SignInButton>
           <button className="pill">Sign in</button>
         </SignInButton>
       </SignedOut>
