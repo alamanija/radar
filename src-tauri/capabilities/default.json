@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the Radar window.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "store:default",
+    "opener:default",
+    "updater:default",
+    "process:default"
+  ]
+}

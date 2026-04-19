@@ -1,0 +1,135 @@
+# Signed release workflow.
+#
+# Trigger: push a tag matching `v*.*.*` (e.g. `git tag v0.2.0 && git push --tags`).
+# Output: a GitHub Release with per-platform installers + a `latest.json` manifest.
+#
+# Prerequisites (one-time, per repo):
+#   1. Generate an Ed25519 keypair:
+#        npm run tauri signer generate -- -w ~/.tauri/radar.key
+#      (Copy the public key into `src-tauri/tauri.conf.json > plugins.updater.pubkey`.)
+#   2. Add these repository secrets (Settings → Secrets and variables → Actions):
+#        TAURI_SIGNING_PRIVATE_KEY          - contents of ~/.tauri/radar.key
+#        TAURI_SIGNING_PRIVATE_KEY_PASSWORD - password you chose at generate time
+#   3. (Optional) On macOS, for notarized/signed .app bundles add:
+#        APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#        APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+#      Without these, macOS builds still produce signed Tauri artifacts (for
+#      the updater) but users will see Gatekeeper warnings on first launch.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS-only signing / notarization. Optional; falls through if unset.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Radar ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          # tauri-action updaterJsonPreferNsis decides which Windows artifact
+          # lands in latest.json; NSIS is the default and what plugin-updater
+          # expects. The MSI target isn't enabled by default in our bundle.
+
+  # After every matrix job uploads its artifacts + partial manifest, consolidate
+  # the `latest.json` and publish the release. `tauri-action` handles the per-
+  # platform entries; this job just flips the draft to published so the
+  # updater-facing `releases/latest/download/latest.json` URL resolves.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 10,
+            });
+            const draft = releases.find(r => r.tag_name === context.ref.replace('refs/tags/', ''));
+            if (!draft) {
+              core.setFailed(`no draft release found for ${context.ref}`);
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: draft.id,
+              draft: false,
+            });
+            core.info(`published release ${draft.tag_name}`);

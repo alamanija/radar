@@ -1,0 +1,15 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+target/
+src-tauri/target/
+src-tauri/gen/
+
+radar-server/.env
+.env
+
+.DS_Store
+.idea/
+.vscode/
