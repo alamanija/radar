@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ClerkProvider } from '@clerk/clerk-react';
 import App from './App.jsx';
 import { installDevBrowserJwtWatcher, restoreDevBrowserJwt } from './clerkPersist.js';
+import { attachLogConsole } from './log.js';
 import './styles.css';
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -20,6 +21,9 @@ if (!PUBLISHABLE_KEY) {
 // Clerk reads `__clerk_db_jwt` from the URL on init, so the replaceState
 // must land before ClerkProvider renders.
 async function bootstrap() {
+  // Pipe Rust `log::*` output into DevTools. Fire-and-forget; doesn't
+  // block the render on logging plumbing.
+  attachLogConsole();
   await restoreDevBrowserJwt();
   installDevBrowserJwtWatcher();
 

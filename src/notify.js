@@ -8,6 +8,7 @@
 // to tray.
 
 import { isTauri } from '@tauri-apps/api/core';
+import { logger } from './log.js';
 
 let permissionGranted = null;
 
@@ -25,7 +26,7 @@ async function ensurePermission() {
     }
     permissionGranted = granted;
   } catch (e) {
-    console.warn('[notify] permission check failed:', e);
+    logger.warn(`[notify] permission check failed: ${e}`);
     permissionGranted = false;
   }
   return permissionGranted;
@@ -42,6 +43,6 @@ export async function notifyBriefingComplete({ newCount, totalCount, sourceCount
     const body = `${newCount} new · ${totalCount} total across ${sourceCount} source${sourceCount === 1 ? '' : 's'}`;
     sendNotification({ title: 'Radar briefing ready', body });
   } catch (e) {
-    console.warn('[notify] send failed:', e);
+    logger.warn(`[notify] send failed: ${e}`);
   }
 }

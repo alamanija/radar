@@ -7,6 +7,7 @@
 //   - Listen for the `tray://run-briefing` event and trigger a briefing run.
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { logger } from './log.js';
 import { relativeTime } from './time.js';
 
 const RUN_EVENT = 'tray://run-briefing';
@@ -22,7 +23,7 @@ export async function pushTrayStatus({ unread, lastRunAt }) {
   } catch (e) {
     // Tray may not exist on first render if setup() hasn't completed yet.
     // The next status push will succeed.
-    console.warn('[tray] set_tray_status failed:', e);
+    logger.warn(`[tray] set_tray_status failed: ${e}`);
   }
 }
 
@@ -35,7 +36,7 @@ export async function pushTrayArticles(articles) {
       .map((a) => ({ title: a.title, url: a.url }));
     await invoke('set_tray_articles', { articles: payload });
   } catch (e) {
-    console.warn('[tray] set_tray_articles failed:', e);
+    logger.warn(`[tray] set_tray_articles failed: ${e}`);
   }
 }
 

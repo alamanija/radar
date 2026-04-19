@@ -1,6 +1,6 @@
 mod ingest;
 mod keychain;
-mod schedule_plist;
+mod schedule_wake;
 mod scheduler;
 mod summarize;
 mod tray;
@@ -15,6 +15,27 @@ const AUTOSTART_FLAG: &str = "--autostart";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Log plugin first so every plugin that comes after (and every
+        // `log::*!` call from our own code) hits the configured targets.
+        // Rolling file in the OS-specific logs dir (macOS:
+        // ~/Library/Logs/com.radar.dev/), plus stdout, plus a Webview
+        // target that the frontend can `attachConsole()` to pipe Rust
+        // logs into DevTools.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .level_for("tao", log::LevelFilter::Warn)
+                .level_for("wry", log::LevelFilter::Warn)
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: None,
+                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+                ])
+                .max_file_size(5_000_000)
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -78,7 +99,7 @@ pub fn run() {
             keychain::clear_clerk_db_jwt,
             tray::set_tray_status,
             tray::set_tray_articles,
-            schedule_plist::sync_schedule_plist,
+            schedule_wake::sync_schedule_wake,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

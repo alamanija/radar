@@ -43,9 +43,10 @@ const ARCHIVE_CAP: usize = 90;
 pub fn spawn<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(WARMUP_SECS)).await;
+        log::info!("[scheduler] loop started");
         loop {
             if let Err(e) = tick(&app).await {
-                eprintln!("[scheduler] tick error: {e}");
+                log::warn!("[scheduler] tick error: {e}");
             }
             tokio::time::sleep(Duration::from_secs(TICK_INTERVAL_SECS)).await;
         }
@@ -103,6 +104,7 @@ async fn fire<R: Runtime>(
     lens: Option<String>,
 ) -> Result<(), String> {
     let prev_ids = read_article_ids(store);
+    log::info!("[scheduler] firing briefing ({} sources)", prev_ids.len());
 
     let response = ingest::run_briefing(sources, categories, lens).await?;
 
@@ -119,8 +121,13 @@ async fn fire<R: Runtime>(
         .iter()
         .filter(|a| !prev_ids.contains(&a.id))
         .count();
+    let total = response.articles.len();
+    log::info!(
+        "[scheduler] briefing done: {new_count} new / {total} total, {} errors",
+        response.errors.len()
+    );
+
     if new_count > 0 {
-        let total = response.articles.len();
         let sources: HashSet<&str> = response.articles.iter().map(|a| a.source.as_str()).collect();
         let body = format!(
             "{new_count} new · {total} total across {} source{}",
@@ -134,7 +141,7 @@ async fn fire<R: Runtime>(
             .body(body)
             .show()
         {
-            eprintln!("[scheduler] notification failed: {e}");
+            log::warn!("[scheduler] notification failed: {e}");
         }
     }
 

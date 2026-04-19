@@ -7,6 +7,7 @@ import { makeSyncFetch, SYNC_BASE } from './sync.js';
 import { installSyncQueue } from './syncQueue.js';
 import { onTrayRunBriefing, pushTrayArticles, pushTrayStatus } from './tray.js';
 import { notifyBriefingComplete } from './notify.js';
+import { logger } from './log.js';
 import { useSyncedResource } from './hooks/useSyncedResource.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { Header } from './components/Header.jsx';
@@ -423,20 +424,20 @@ export default function App() {
   // store, and emits `briefing://completed`. The listener below picks that
   // up and syncs React state so an open webview refreshes in place.
 
-  // macOS LaunchAgent: idempotently write/reload (or remove) the plist
-  // that wakes Radar at slot time from a fully-quit state. On non-macOS
-  // the Rust side is a no-op for now. Runs after hydration so we never
-  // stomp the plist with default values mid-boot.
+  // OS-level relauncher so the briefing fires after the user fully Quit.
+  // macOS → LaunchAgent plist, Windows → Task Scheduler, Linux → systemd
+  // user timer. See `src-tauri/src/schedule_wake.rs`. Runs after hydration
+  // so we never stomp the wake entry with default values mid-boot.
   useEffect(() => {
     if (!ready || !isTauri()) return;
     const parts = /^(\d{1,2}):(\d{2})$/.exec(scheduleTime);
     const hour = parts ? Number(parts[1]) : null;
     const minute = parts ? Number(parts[2]) : null;
-    invoke('sync_schedule_plist', {
+    invoke('sync_schedule_wake', {
       enabled: !!scheduleEnabled && parts != null,
       hour,
       minute,
-    }).catch((e) => console.warn('[schedule-plist] sync failed:', e));
+    }).catch((e) => logger.warn(`[schedule-wake] sync failed: ${e}`));
   }, [ready, scheduleEnabled, scheduleTime]);
   useEffect(() => {
     if (!ready || !isTauri()) return;
@@ -457,7 +458,7 @@ export default function App() {
           const storeArchives = await getItem('archives');
           if (Array.isArray(storeArchives)) setArchives(storeArchives);
         } catch (e) {
-          console.warn('[scheduler] archive reload failed:', e);
+          logger.warn(`[scheduler] archive reload failed: ${e}`);
         }
 
         // Stamp per-source health the same way onBriefing does.

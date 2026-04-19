@@ -18,6 +18,7 @@
 // normally in a real browser).
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { logger } from './log.js';
 
 const JWT_PARAM = '__clerk_db_jwt';
 
@@ -34,7 +35,7 @@ export async function restoreDevBrowserJwt() {
     url.searchParams.set(JWT_PARAM, jwt);
     window.history.replaceState(null, '', url);
   } catch (e) {
-    console.warn('[clerkPersist] restore failed:', e);
+    logger.warn(`[clerkPersist] restore failed: ${e}`);
   }
 }
 
@@ -52,7 +53,7 @@ export function installDevBrowserJwtWatcher() {
         if (jwt && jwt !== lastPersisted) {
           lastPersisted = jwt;
           invoke('set_clerk_db_jwt', { jwt }).catch((e) => {
-            console.warn('[clerkPersist] persist failed:', e);
+            logger.warn(`[clerkPersist] persist failed: ${e}`);
           });
         }
       }

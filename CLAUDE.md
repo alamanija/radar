@@ -43,9 +43,12 @@ Rust-only:
 - **Profile + run-at-launch.** A separate `profile` storage key holds `{name, role, lens}`. `profile.name` drives the briefing greeting and the sidebar footer avatar/name; `profile.role` is the sidebar tagline; `profile.lens` is a free-text "professional lens" that's forwarded to `ingest_briefing` as the optional `lens: Option<String>` and injected into Claude's system prompt as a "Reader context" block when non-empty. `runAtLaunch` (in prefs) fires `onBriefing()` once after hydration if enabled and there's at least one usable source. A `launchFired` flag prevents repeat auto-fire if the user toggles the setting mid-session.
 - **Daily schedule.** `scheduleEnabled` + `scheduleTime` (`HH:MM` local) in prefs. Two cooperating layers:
     - **In-process scheduler** (`src-tauri/src/scheduler.rs`): a `tokio` loop spawned from `lib.rs::run().setup()` that polls the Tauri store every 30s (after a 5s warmup so the webview can attach its event listener). When `now >= today's slot` and `archives[0].runAt < today's slot`, it calls `ingest::run_briefing` (the library-level function that `ingest_briefing` command wraps), writes `articles` + prepends an `archives` snapshot to the store, emits `briefing://completed` with the full response, and fires a `NotificationExt` banner. The webview listener in `App.jsx` overlays per-article read/bookmarked state, reloads `archives` from the store, and stamps per-source health — matching `onBriefing`'s manual path.
-    - **macOS LaunchAgent** (`src-tauri/src/schedule_plist.rs`): on `scheduleEnabled` / `scheduleTime` change, the frontend calls `sync_schedule_plist(enabled, hour, minute)`. The Rust command writes `~/Library/LaunchAgents/com.radar.scheduler.plist` with a `StartCalendarInterval` matching the slot and a `ProgramArguments` of `[<current_exe>, "--autostart"]`, then `launchctl load -w`s it. When the slot fires, launchd relaunches Radar with `--autostart` (window stays hidden); the in-process scheduler sees the slot is past and fires immediately. If Radar is already running, launchd skips the wake — no duplicate process, the running scheduler handles the briefing. Writes are idempotent (identical plist on disk → no-op). Disabling schedule unloads + removes the plist.
+    - **OS relauncher** (`src-tauri/src/schedule_wake.rs`): on `scheduleEnabled` / `scheduleTime` change the frontend calls `sync_schedule_wake(enabled, hour, minute)`. Platform-dispatched inside Rust:
+        - macOS → `~/Library/LaunchAgents/com.radar.scheduler.plist` with `StartCalendarInterval` + `ProgramArguments: [<current_exe>, "--autostart"]`, `launchctl load/unload -w`.
+        - Windows → `schtasks /Create /SC DAILY /TN com.radar.scheduler /TR "<exe> --autostart" /ST HH:MM /F` (and `/Delete /F` on disable).
+        - Linux → `~/.config/systemd/user/com.radar.scheduler.{service,timer}` with `OnCalendar=*-*-* HH:MM:00`, registered via `systemctl --user enable --now`.
+      When the slot fires, the OS launches Radar with `--autostart` (window hidden); the in-process scheduler sees the slot is past and fires immediately. If Radar is already running, the OS scheduler skips the wake (or spawns a second short-lived process that exits without doing harm) — the running scheduler handles the briefing. All three paths are idempotent: identical on-disk config → no-op.
   - `runAtLaunch` stays frontend-only (it's an on-mount trigger, orthogonal to time-based scheduling).
-  - Windows Task Scheduler / Linux systemd timers aren't wired yet; `sync_schedule_plist` is a no-op off macOS so the frontend can call it unconditionally.
 - **Known-unfinished stubs.** "Staleness threshold" in Settings is displayed as `—` / "Not wired" because we don't cache articles across briefings. "Gmail — newsletter inbox" in Integrations is a disabled button — full OAuth flow + Gmail API + HTML-to-article parsing is a separate project, not shipped.
 
 ## Cross-device sync
@@ -123,7 +126,17 @@ Radar is a hybrid dock + menu-bar app on macOS (tray on Windows/Linux). Wiring l
 - **Notifications** — `tauri-plugin-notification`. `src/notify.js` caches permission after first grant; banner fires from `onBriefing` when at least one new article id landed and the window is not currently focused (the rendered UI is notification enough when the user is already looking).
 - **Open at login** — `tauri-plugin-autostart` with `MacosLauncher::LaunchAgent`, passing `--autostart` at OS-triggered launch. `lib.rs`'s `setup()` checks `std::env::args()` for that flag and calls `main.hide()` so Radar boots quietly to the menu bar. UI toggle is `AutostartToggle` in `SettingsView` — reads `isEnabled()` on mount, flips `enable()`/`disable()`, no React mirror (OS owns the state).
 
+## Logging
+
+`tauri-plugin-log` is the shared pipe. Rust code calls `log::info!`/`log::warn!`/`log::error!`; the frontend calls `logger.info/warn/error` (shim in `src/log.js`) which routes through the same plugin under Tauri and falls back to `console.*` under plain Vite. Three targets are configured in `lib.rs::run()`:
+
+- `Stdout` — visible in the terminal during `npm run tauri:dev`.
+- `LogDir` — rolling file, 5 MB cap per file. macOS: `~/Library/Logs/com.radar.dev/Radar.log`. Windows: `%LOCALAPPDATA%\com.radar.dev\logs\`. Linux: `$XDG_DATA_HOME/com.radar.dev/logs/`.
+- `Webview` — forwarded to DevTools once `attachLogConsole()` runs (fires from `main.jsx` at boot).
+
+`tao` and `wry` are clamped to `Warn` so UI event noise doesn't drown the interesting signal. The scheduler emits `log::info!("[scheduler] loop started")` on boot and `[scheduler] firing briefing …` / `briefing done: N new / M total, K errors` around each run — that's the first place to look when a scheduled slot seems to have gone silent.
+
 ## Known gaps
 
 - Tray menu-bar icon uses the alpha mask of the color app icon. Functional, but a dedicated monochrome PNG would render crisper on light/dark menu bars.
-- Schedule-wake LaunchAgent is macOS-only. Windows Task Scheduler and a Linux systemd timer are the cross-platform equivalents; the `sync_schedule_plist` command currently no-ops on those platforms so scheduled briefings still only fire while Radar is running.
+- No first-class cross-platform testing pipeline — Windows / Linux `sync_schedule_wake` paths compile but haven't been runtime-exercised; they're reviewed by eye, not by a live system.
