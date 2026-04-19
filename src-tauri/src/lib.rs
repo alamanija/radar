@@ -17,6 +17,9 @@ pub fn run() {
             keychain::set_anthropic_api_key,
             keychain::clear_anthropic_api_key,
             keychain::anthropic_api_key_status,
+            keychain::set_clerk_db_jwt,
+            keychain::get_clerk_db_jwt,
+            keychain::clear_clerk_db_jwt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
