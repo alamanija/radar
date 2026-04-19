@@ -92,7 +92,16 @@ Signed Tauri updater over GitHub Releases. Tagging `vX.Y.Z` on `main` triggers `
 4. Add repo Actions secrets: `TAURI_SIGNING_PRIVATE_KEY` (contents of `~/.tauri/radar.key`), `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit the private key.
 5. (macOS only, optional but recommended) Add Apple-signing secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) so notarized builds don't trip Gatekeeper.
 
-**Shipping a release:** bump `version` in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` to match; commit; `git tag vX.Y.Z && git push --tags`. The workflow builds a draft release; the `publish` job flips it to published once every platform's artifacts upload successfully.
+**Shipping a release:** `package.json` is the single source of truth for the app version. `tauri.conf.json` reads it via `"version": "../package.json"` (Tauri 2 resolves JSON/TOML paths in that field). `src-tauri/Cargo.toml` is mirrored automatically by `scripts/sync-version.mjs`, which runs in the `version` npm lifecycle. Use `npm version`:
+
+```bash
+npm version patch          # 0.2.4 → 0.2.5 (bug fix)
+npm version minor          # 0.2.4 → 0.3.0 (feature)
+npm version major          # 0.2.4 → 1.0.0 (breaking)
+git push && git push --tags
+```
+
+`npm version` bumps `package.json`, runs the sync script (which updates + git-adds `src-tauri/Cargo.toml`), then commits and tags in one step. Pushing the tag triggers `.github/workflows/release.yml`. **Never edit the Cargo.toml or tauri.conf.json version fields by hand** — they'll either drift from package.json (Cargo) or fail to parse (Tauri's path string).
 
 **Rolling back:** GitHub Releases → edit the bad release → change it back to draft (or delete it). The `releases/latest/download/latest.json` URL now resolves to the prior release, and clients that haven't yet downloaded will see the older version on their next check. Clients that already downloaded + applied the bad version need a fresh fix-forward release.
 
