@@ -16,15 +16,18 @@ if (!PUBLISHABLE_KEY) {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <ClerkProvider publishableKey={PUBLISHABLE_KEY}>
-      {/* No fallback redirect URLs: sign-in runs through
-          `<SignIn routing="virtual" />` in SettingsView, which flips the
-          React context in-place. A redirect here would force a full page
-          reload, and in Tauri's webview the dev Clerk session doesn't
-          survive that reload (third-party cookie on *.clerk.accounts.dev
-          is blocked and the `__clerk_db_jwt` URL param gets dropped
-          across the `tauri://localhost` navigation), so the user lands
-          back on a freshly-initialised, signed-out Clerk. */}
+    <ClerkProvider
+      publishableKey={PUBLISHABLE_KEY}
+      // Clerk's default after-sign-in redirect calls `window.location.assign`,
+      // which hard-reloads the app. Under `tauri://localhost` the reload drops
+      // the `__clerk_db_jwt` (third-party cookie on *.clerk.accounts.dev is
+      // blocked, URL param strips across the navigation), so Clerk boots a
+      // fresh anonymous client and the just-created session becomes
+      // unreachable. Overriding router* with `history.pushState`/`replaceState`
+      // keeps the redirect in-page; `isSignedIn` flipping re-renders the UI.
+      routerPush={(to) => window.history.pushState(null, '', to)}
+      routerReplace={(to) => window.history.replaceState(null, '', to)}
+    >
       <App />
     </ClerkProvider>
   </StrictMode>
