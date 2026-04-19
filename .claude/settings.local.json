@@ -8,7 +8,9 @@
       "Bash(npm install *)",
       "Bash(npm run *)",
       "Bash(cargo check *)",
-      "Bash(cargo tree *)"
+      "Bash(cargo tree *)",
+      "Bash(gh api *)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

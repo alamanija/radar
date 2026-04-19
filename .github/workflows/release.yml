@@ -3,6 +3,11 @@
 # Trigger: push a tag matching `v*.*.*` (e.g. `git tag v0.2.0 && git push --tags`).
 # Output: a GitHub Release with per-platform installers + a `latest.json` manifest.
 #
+# Platform matrix: Apple Silicon macOS + Windows. Intentionally skipping
+# Intel macOS (all Macs sold since 2020 are Apple Silicon) and Linux (no
+# users asking for it yet). Add either back when a real user needs it —
+# each extra target is another ~15-25 min of wall time per release.
+#
 # Prerequisites (one-time, per repo):
 #   1. Generate an Ed25519 keypair:
 #        npm run tauri signer generate -- -w ~/.tauri/radar.key
@@ -10,11 +15,6 @@
 #   2. Add these repository secrets (Settings → Secrets and variables → Actions):
 #        TAURI_SIGNING_PRIVATE_KEY          - contents of ~/.tauri/radar.key
 #        TAURI_SIGNING_PRIVATE_KEY_PASSWORD - password you chose at generate time
-#   3. (Optional) On macOS, for notarized/signed .app bundles add:
-#        APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-#        APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-#      Without these, macOS builds still produce signed Tauri artifacts (for
-#      the updater) but users will see Gatekeeper warnings on first launch.
 
 name: Release
 
@@ -34,45 +34,35 @@ jobs:
         include:
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-          - platform: ubuntu-22.04
-            args: ''
+            rust-targets: 'aarch64-apple-darwin'
           - platform: windows-latest
             args: ''
+            rust-targets: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust-targets }}
 
+      # Cache the whole workspace (`.`) not just `src-tauri`. The root
+      # `Cargo.toml` is a workspace with `src-tauri` + `radar-server` as
+      # members; they share `./target`. Pointing the cache at the root
+      # means a single cache entry per platform covers everything and
+      # hits warm on subsequent releases.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '. -> target'
+          cache-on-failure: true
 
-      - name: Install Linux deps
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libssl-dev
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version-file: '.nvmrc'
+          cache: 'npm'
 
       - name: Install JS deps
         run: npm ci
@@ -86,8 +76,8 @@ jobs:
           # macOS code-signing + notarization. Intentionally NOT set here —
           # an empty APPLE_CERTIFICATE is worse than an absent one (Tauri
           # tries to import the empty string and fails). Re-add these env
-          # vars in a `with:` or `env:` block once you enroll in the Apple
-          # Developer program and populate the matching repo secrets:
+          # vars once you enroll in the Apple Developer program and
+          # populate the matching repo secrets:
           #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
           #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
           # Until then, macOS builds are unsigned — Gatekeeper will show a
@@ -99,9 +89,6 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
-          # tauri-action updaterJsonPreferNsis decides which Windows artifact
-          # lands in latest.json; NSIS is the default and what plugin-updater
-          # expects. The MSI target isn't enabled by default in our bundle.
 
   # After every matrix job uploads its artifacts + partial manifest, consolidate
   # the `latest.json` and publish the release. `tauri-action` handles the per-
@@ -113,7 +100,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Publish release
         uses: actions/github-script@v7
         with:
