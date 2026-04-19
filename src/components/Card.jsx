@@ -136,6 +136,31 @@ export function Card({ article, showAccent, onToggleRead, onToggleBookmark, useS
 }
 
 function Thumb({ article }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const hasImage = !!article.imageUrl && !imgFailed;
+
+  if (hasImage) {
+    return (
+      <div style={cardStyles.thumb}>
+        <img
+          src={article.imageUrl}
+          alt=""
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+          }}
+        />
+        <span style={cardStyles.thumbLabel}>cover · {article.categoryLabel}</span>
+      </div>
+    );
+  }
+
+  // Fallback: decorative pattern for feeds that don't ship an image.
   const patterns = ['stripes', 'grid', 'dots', 'diag', 'arcs'];
   const pattern = patterns[article.id % patterns.length];
   const color = `var(--dot-${article.accent})`;

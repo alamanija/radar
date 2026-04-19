@@ -46,6 +46,7 @@ pub struct Article {
     pub bookmarked: bool,
     pub accent: String,
     pub url: String,
+    pub image_url: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -243,7 +244,7 @@ async fn fetch_source(
     let articles: Vec<Article> = feed
         .entries
         .iter()
-        .take(10)
+        .take(30)
         .filter_map(|entry| {
             let title = entry.title.as_ref().map(|t| t.content.trim().to_string())?;
             let url = entry.links.first().map(|l| l.href.clone())?;
@@ -261,6 +262,8 @@ async fn fetch_source(
                 .map(|t| relative_time(t, now))
                 .unwrap_or_else(|| "recent".to_string());
 
+            let image_url = extract_image(entry, &raw_summary);
+
             Some(Article {
                 id: hash_id(src.id, &url),
                 title,
@@ -275,6 +278,7 @@ async fn fetch_source(
                 bookmarked: false,
                 accent: accent.clone(),
                 url,
+                image_url,
             })
         })
         .collect();
@@ -319,6 +323,105 @@ fn strip_html_and_truncate(input: &str, max_chars: usize) -> String {
     } else {
         collapsed
     }
+}
+
+/// Best-effort cover image from a feed entry, in this order:
+///   1. `media:thumbnail` (feed-rs `entry.media[*].thumbnails`)
+///   2. `media:content` / `<enclosure>` with an `image/*` content-type
+///   3. First `<img src="...">` in the entry's HTML body or summary
+fn extract_image(entry: &feed_rs::model::Entry, raw_html: &str) -> Option<String> {
+    for m in &entry.media {
+        if let Some(t) = m.thumbnails.first() {
+            return Some(t.image.uri.clone());
+        }
+    }
+    for m in &entry.media {
+        for c in &m.content {
+            let is_image = c
+                .content_type
+                .as_ref()
+                .map(|t| t.ty().as_str().starts_with("image"))
+                .unwrap_or(false);
+            if is_image {
+                if let Some(url) = &c.url {
+                    return Some(url.to_string());
+                }
+            }
+            // Some feeds set url without content_type — accept if extension looks image-y.
+            if c.content_type.is_none() {
+                if let Some(url) = &c.url {
+                    let s = url.as_str();
+                    let lower = s.to_ascii_lowercase();
+                    if lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+                        || lower.ends_with(".png") || lower.ends_with(".webp")
+                        || lower.ends_with(".gif") || lower.ends_with(".avif")
+                    {
+                        return Some(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let body = entry.content.as_ref().and_then(|c| c.body.as_deref()).unwrap_or("");
+    first_img_src(body).or_else(|| first_img_src(raw_html))
+}
+
+/// Scan an HTML fragment for the first `<img ... src="...">` and return the
+/// src value. Tolerant of single quotes and whitespace; ignores data: URLs
+/// (tracking pixels, inline placeholders).
+fn first_img_src(html: &str) -> Option<String> {
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    while i + 4 < bytes.len() {
+        if bytes[i] == b'<'
+            && bytes[i + 1].eq_ignore_ascii_case(&b'i')
+            && bytes[i + 2].eq_ignore_ascii_case(&b'm')
+            && bytes[i + 3].eq_ignore_ascii_case(&b'g')
+            && bytes[i + 4].is_ascii_whitespace()
+        {
+            let Some(rel) = html[i..].find('>') else { break };
+            let tag = &html[i..i + rel];
+            if let Some(src) = attr_value(tag, "src") {
+                if !src.starts_with("data:") {
+                    return Some(src);
+                }
+            }
+            i += rel + 1;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Pull `name="value"` or `name='value'` out of an HTML tag fragment,
+/// case-insensitive on the attribute name.
+fn attr_value(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let key = name.to_ascii_lowercase();
+    let mut search_from = 0;
+    while let Some(idx) = lower[search_from..].find(&key) {
+        let start = search_from + idx;
+        // must be preceded by whitespace or `<img` boundary
+        let before_ok = start == 0
+            || lower.as_bytes()[start - 1].is_ascii_whitespace();
+        let after = start + key.len();
+        let rest = &tag[after..];
+        let rest_trimmed = rest.trim_start();
+        if before_ok && rest_trimmed.starts_with('=') {
+            let after_eq = rest_trimmed[1..].trim_start();
+            let quote = after_eq.as_bytes().first().copied();
+            if quote == Some(b'"') || quote == Some(b'\'') {
+                let q = quote.unwrap() as char;
+                let after_q = &after_eq[1..];
+                if let Some(end) = after_q.find(q) {
+                    return Some(after_q[..end].to_string());
+                }
+            }
+        }
+        search_from = start + key.len();
+    }
+    None
 }
 
 fn hash_id(source_id: u32, url: &str) -> u64 {
