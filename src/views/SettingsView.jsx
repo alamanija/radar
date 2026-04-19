@@ -298,7 +298,13 @@ function AccountControl() {
         </div>
       </SignedIn>
       <SignedOut>
-        <SignInButton mode="modal">
+        {/* Redirect flow (no `mode="modal"`). Modal mode is fragile in
+            cross-origin contexts because it relies on cookies set by
+            the Clerk-hosted iframe being readable from the app's
+            top-level origin — WebKit (and Tauri's macOS webview) isolate
+            these. Redirect flow keeps auth on the app origin so session
+            state survives. */}
+        <SignInButton forceRedirectUrl={window.location.href}>
           <button className="pill">Sign in</button>
         </SignInButton>
       </SignedOut>
