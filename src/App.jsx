@@ -5,7 +5,7 @@ import { RADAR_DATA } from './data.js';
 import { loadSnapshot, setItem } from './storage.js';
 import { makeSyncFetch, SYNC_BASE } from './sync.js';
 import { installSyncQueue } from './syncQueue.js';
-import { onTrayRunBriefing, pushTrayStatus } from './tray.js';
+import { onTrayRunBriefing, pushTrayArticles, pushTrayStatus } from './tray.js';
 import { notifyBriefingComplete } from './notify.js';
 import { useSyncedResource } from './hooks/useSyncedResource.js';
 import { Sidebar } from './components/Sidebar.jsx';
@@ -482,6 +482,13 @@ export default function App() {
     const lastRunAt = archives[0]?.runAt ? Date.parse(archives[0].runAt) : null;
     pushTrayStatus({ unread, lastRunAt });
   }, [ready, articles, archives]);
+
+  // Tray menu: top N article titles as click-through items. Re-pushed on
+  // every briefing so the menu always reflects the latest run.
+  useEffect(() => {
+    if (!ready) return;
+    pushTrayArticles(articles);
+  }, [ready, articles]);
 
   // Tray "Run briefing now" → trigger a briefing via the live ref so the
   // handler always sees current sources/categories/lens.

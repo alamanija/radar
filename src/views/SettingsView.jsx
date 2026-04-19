@@ -252,6 +252,56 @@ function UpdatesControl() {
   );
 }
 
+// OS-level "Open at login" toggle backed by tauri-plugin-autostart. The
+// truth lives with the OS (LaunchAgent on macOS, Startup folder on Windows,
+// .desktop autostart on Linux), not in app storage — we read `isEnabled()`
+// on mount and on every toggle instead of shadowing it in React state.
+function AutostartToggle() {
+  const [enabled, setEnabled] = useState(false);
+  const [ready, setReady] = useState(false);
+  const available = isTauri();
+
+  useEffect(() => {
+    if (!available) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { isEnabled } = await import('@tauri-apps/plugin-autostart');
+        const on = await isEnabled();
+        if (!cancelled) {
+          setEnabled(on);
+          setReady(true);
+        }
+      } catch (e) {
+        console.warn('[autostart] read failed:', e);
+        if (!cancelled) setReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [available]);
+
+  if (!available) {
+    return (
+      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--text-3)' }}>
+        Desktop only
+      </span>
+    );
+  }
+
+  const toggle = async () => {
+    try {
+      const { enable, disable, isEnabled } = await import('@tauri-apps/plugin-autostart');
+      if (enabled) await disable();
+      else await enable();
+      setEnabled(await isEnabled());
+    } catch (e) {
+      console.warn('[autostart] toggle failed:', e);
+    }
+  };
+
+  return <Toggle on={enabled} onChange={ready ? toggle : undefined} />;
+}
+
 // Modal sign-in. `mode="modal"` renders Clerk's full `<SignIn />` in a
 // same-origin overlay (no iframe), and the in-page after-sign-in redirect
 // wired up on `ClerkProvider` keeps the session alive across the flow.
@@ -406,6 +456,9 @@ export function SettingsView({
             />
             <Toggle on={scheduleEnabled} onChange={() => setScheduleEnabled(v => !v)} />
           </div>
+        )}
+        {row('Open at login', 'Launch Radar hidden to the menu bar when you boot your Mac — keeps scheduled briefings firing without re-opening.',
+          <AutostartToggle />
         )}
         {row('Staleness threshold', 'Not wired — articles aren\'t cached across briefings yet.',
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--text-3)' }}>—</span>

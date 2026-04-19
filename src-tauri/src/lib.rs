@@ -3,7 +3,12 @@ mod keychain;
 mod summarize;
 mod tray;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
+use tauri_plugin_autostart::MacosLauncher;
+
+/// CLI flag the autostart plugin passes when the app is launched by the OS
+/// at login. We detect it and start with the window hidden to tray.
+const AUTOSTART_FLAG: &str = "--autostart";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -11,6 +16,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_FLAG]),
+        ))
         // Updater + process: fetch signed releases from the configured
         // endpoint and, after a verified download, restart the app into the
         // new version via tauri_plugin_process::init()'s `restart` command.
@@ -30,11 +39,23 @@ pub fn run() {
             let main = app
                 .get_webview_window("main")
                 .expect("tauri.conf.json must define a window with label `main`");
+
+            // If the OS launched us at login, start hidden-to-tray so we're
+            // quietly present rather than popping a window at boot. The user
+            // can click the tray icon to bring Radar forward.
+            if std::env::args().any(|a| a == AUTOSTART_FLAG) {
+                let _ = main.hide();
+            }
+
             let window = main.clone();
+            let app_handle = app.handle().clone();
             main.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+                    // Rebuild tray menu so the Show/Hide label follows the
+                    // window's real state after close-to-tray.
+                    tray::on_window_hidden(&app_handle);
                 }
             });
 
@@ -49,7 +70,19 @@ pub fn run() {
             keychain::get_clerk_db_jwt,
             keychain::clear_clerk_db_jwt,
             tray::set_tray_status,
+            tray::set_tray_articles,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS: fired when the user clicks a notification banner, the
+            // dock icon, or otherwise activates Radar while the window is
+            // hidden. Surface the main window so they don't land on a
+            // silent no-op.
+            if let RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    tray::surface_main_window(app);
+                }
+            }
+        });
 }
