@@ -23,8 +23,13 @@
 //!   tray:article:<index>          open the article at that index
 //!
 //! Best-practice notes (macOS):
-//! - `icon_as_template(true)` — when the bundled icon is replaced with a
-//!   monochrome PNG it'll auto-adapt to light/dark menu bars.
+//! - `icon_as_template(true)` tells AppKit to ignore RGB and use the alpha
+//!   channel as a monochrome mask, so the icon auto-inverts on light/dark
+//!   menu bars. The current icon is an RGBA app icon — the silhouette
+//!   works, but a dedicated monochrome design would look crisper.
+//! - We embed a 64×64 asset (`icons/64x64.png`) via `include_bytes!` rather
+//!   than passing the 512×512 app icon; avoids having AppKit rescale a
+//!   full-size bitmap every render.
 //! - `show_menu_on_left_click(false)` — left-click toggles the window,
 //!   right-click opens the menu. Standard macOS hybrid-menu-bar-app idiom.
 
@@ -40,6 +45,10 @@ use tauri_plugin_opener::OpenerExt;
 
 pub const TRAY_ID: &str = "radar-tray";
 pub const RUN_EVENT: &str = "tray://run-briefing";
+
+/// Pre-sized menu-bar asset. 64×64 comfortably covers 22pt @2x retina and is
+/// what the bundled icon set ships anyway; no extra asset lives in the repo.
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/64x64.png");
 
 const TOGGLE_ID: &str = "tray:toggle-window";
 const RUN_ID: &str = "tray:run";
@@ -69,10 +78,8 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     app.manage(TrayState::default());
 
     let menu = build_menu(app, &[], false)?;
-    let icon = app
-        .default_window_icon()
-        .cloned()
-        .expect("bundle.icon must be configured — tray cannot render without a default icon");
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON_BYTES)
+        .expect("icons/64x64.png must be a valid PNG — check bundle.icon list");
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)

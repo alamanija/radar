@@ -107,8 +107,19 @@ git push && git push --tags
 
 **Client-side schema migrations** belong in `src/storage.js`. The store currently stamps `version: 1` on every boot. Before changing a local data shape, read `version`, transform old → new in-place, then write the new version. Never blindly bump — the field exists specifically so you have something to branch on.
 
+## Menu-bar presence
+
+Radar is a hybrid dock + menu-bar app on macOS (tray on Windows/Linux). Wiring lives in `src-tauri/src/tray.rs`:
+
+- **Tray icon** — embedded at compile time from `icons/64x64.png` via `include_bytes!` (so AppKit doesn't resize the 512×512 app icon every render). `icon_as_template(true)` uses the alpha channel as a monochrome mask; good enough for now, a dedicated monochrome design would be crisper.
+- **Dynamic menu** — rebuilt whenever state changes. Top section is up to 5 recent article titles (click opens the URL via `tauri-plugin-opener`), middle is "Show/Hide Radar" (label tracks actual `is_visible()`) and "Run briefing now" (emits `tray://run-briefing`, frontend listens and fires `onBriefing`), bottom is "Quit Radar". Article URLs live in `TrayState` (`Mutex<Vec<ArticleLink>>` in `AppHandle` state); menu items have ids `tray:article:<index>` so the menu-event callback can look a URL up by index.
+- **Close-to-tray** — `lib.rs` intercepts `WindowEvent::CloseRequested`, calls `prevent_close()`, hides the window, and calls `tray::on_window_hidden` so the Show/Hide label flips. Cmd+Q and tray → Quit still `app.exit(0)` normally.
+- **Reopen handling** — `RunEvent::Reopen` (fired by macOS on notification-click / dock-click / activation) surfaces the hidden window. Keeps notification banners clickable without extra action wiring.
+- **Status push** — `App.jsx` effects call `set_tray_status` (unread count + relative last-run, threads through macOS tray title + cross-platform tooltip) and `set_tray_articles` (top 5 article titles/urls) on every briefing or read-toggle.
+- **Notifications** — `tauri-plugin-notification`. `src/notify.js` caches permission after first grant; banner fires from `onBriefing` when at least one new article id landed and the window is not currently focused (the rendered UI is notification enough when the user is already looking).
+- **Open at login** — `tauri-plugin-autostart` with `MacosLauncher::LaunchAgent`, passing `--autostart` at OS-triggered launch. `lib.rs`'s `setup()` checks `std::env::args()` for that flag and calls `main.hide()` so Radar boots quietly to the menu bar. UI toggle is `AutostartToggle` in `SettingsView` — reads `isEnabled()` on mount, flips `enable()`/`disable()`, no React mirror (OS owns the state).
+
 ## Known gaps
 
-- `src-tauri/icons/icon.png` is a 32×32 placeholder so `tauri::generate_context!` can resolve it. Replace with real icons (all sizes listed by `tauri.conf.json > bundle.icon`) before `tauri build`.
-- `bundle.active` is `false`; flip it on and populate icons when it's time to ship an installer.
-- Settings copy still reads "Stored in Windows Credential Manager" (from the prototype); revisit when real key storage is wired up.
+- Tray menu-bar icon uses the alpha mask of the color app icon. Functional, but a dedicated monochrome PNG would render crisper on light/dark menu bars.
+- Daily schedule + briefing are still **frontend-only** — they only fire while the Radar process is alive. Hide-to-tray and autostart cover "user closed the window" and "user rebooted", but a full Quit stops the scheduler. A Rust-owned scheduler (tokio task reading store snapshots) would close that.
