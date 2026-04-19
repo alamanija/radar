@@ -83,13 +83,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS-only signing / notarization. Optional; falls through if unset.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS code-signing + notarization. Intentionally NOT set here —
+          # an empty APPLE_CERTIFICATE is worse than an absent one (Tauri
+          # tries to import the empty string and fails). Re-add these env
+          # vars in a `with:` or `env:` block once you enroll in the Apple
+          # Developer program and populate the matching repo secrets:
+          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+          #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+          # Until then, macOS builds are unsigned — Gatekeeper will show a
+          # warning on first launch; users work around with right-click → Open.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Radar ${{ github.ref_name }}'
