@@ -1,6 +1,6 @@
 import { Card, Row, SkeletonCard } from '../components/Card.jsx';
 import { OnboardingTutorial } from '../components/OnboardingTutorial.jsx';
-import { relativeTime } from '../time.js';
+import { greeting, relativeTime } from '../time.js';
 
 const viewStyles = {
   wrap: { padding: '24px 32px 80px', maxWidth: 1240, margin: '0 auto' },
@@ -65,7 +65,7 @@ export function BriefingView({ articles, categories, sources, profile, archives,
   return (
     <div style={viewStyles.wrap}>
       <h1 className="serif" style={viewStyles.title}>
-        {profileName ? `Good morning, ${profileName}.` : 'Good morning.'}
+        {greeting(profileName)}
       </h1>
       <p style={viewStyles.subtitle}>
         {scanning
