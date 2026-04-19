@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import { RADAR_DATA } from './data.js';
-import { loadSnapshot, setItem } from './storage.js';
+import { getItem, loadSnapshot, setItem } from './storage.js';
 import { makeSyncFetch, SYNC_BASE } from './sync.js';
 import { installSyncQueue } from './syncQueue.js';
 import { onTrayRunBriefing, pushTrayArticles, pushTrayStatus } from './tray.js';
@@ -399,6 +399,12 @@ export default function App() {
   const onBriefingRef = useRef(null);
   useEffect(() => { onBriefingRef.current = onBriefing; });
 
+  // Same idea for sources: the `briefing://completed` listener below needs
+  // the latest sources to stamp health, but the listener only subscribes
+  // once (on `ready`) so a closure over `sources` would go stale.
+  const sourcesRef = useRef(sources);
+  useEffect(() => { sourcesRef.current = sources; });
+
   // Run-at-launch: once per app lifetime, after hydration settles, if enabled
   // and there's at least one usable source.
   const [launchFired, setLaunchFired] = useState(false);
@@ -411,48 +417,77 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // Daily schedule (frontend-only — fires only while the app is running).
-  // If we missed today's slot while the app was closed, fire on next startup.
-  // Re-runs on every briefing because `archives` is in the dep list; that's
-  // how the effect "reschedules" for tomorrow.
+  // Daily schedule is owned by the Rust `scheduler` module (see
+  // `src-tauri/src/scheduler.rs`). It polls the Tauri store, runs the
+  // ingest pipeline when the slot hits, writes the results back to the
+  // store, and emits `briefing://completed`. The listener below picks that
+  // up and syncs React state so an open webview refreshes in place.
+
+  // macOS LaunchAgent: idempotently write/reload (or remove) the plist
+  // that wakes Radar at slot time from a fully-quit state. On non-macOS
+  // the Rust side is a no-op for now. Runs after hydration so we never
+  // stomp the plist with default values mid-boot.
   useEffect(() => {
-    if (!ready || !scheduleEnabled) return;
+    if (!ready || !isTauri()) return;
     const parts = /^(\d{1,2}):(\d{2})$/.exec(scheduleTime);
-    if (!parts) return;
-    const h = Number(parts[1]);
-    const m = Number(parts[2]);
-    if (h > 23 || m > 59) return;
+    const hour = parts ? Number(parts[1]) : null;
+    const minute = parts ? Number(parts[2]) : null;
+    invoke('sync_schedule_plist', {
+      enabled: !!scheduleEnabled && parts != null,
+      hour,
+      minute,
+    }).catch((e) => console.warn('[schedule-plist] sync failed:', e));
+  }, [ready, scheduleEnabled, scheduleTime]);
+  useEffect(() => {
+    if (!ready || !isTauri()) return;
+    let unlisten = () => {};
+    let cancelled = false;
+    (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      const off = await listen('briefing://completed', async ({ payload }) => {
+        if (!payload) return;
+        const fresh = Array.isArray(payload.articles) ? payload.articles : [];
+        setArticles(applyArticleStates(fresh));
+        setBriefingErrors(payload.errors ?? []);
 
-    const hasUsableSources = () =>
-      sources.some(s => s.enabled && (s.feedUrl ?? '').length > 0);
+        // Rust already appended the archive snapshot to the store — mirror
+        // it into React state so the Archive view and useSyncedResource
+        // push path both see the new entry.
+        try {
+          const storeArchives = await getItem('archives');
+          if (Array.isArray(storeArchives)) setArchives(storeArchives);
+        } catch (e) {
+          console.warn('[scheduler] archive reload failed:', e);
+        }
 
-    const fire = () => {
-      if (hasUsableSources()) onBriefingRef.current?.();
+        // Stamp per-source health the same way onBriefing does.
+        const now = Date.now();
+        const failedIds = new Set(
+          (payload.errors ?? [])
+            .map(e => e.sourceId ?? e.source_id)
+            .filter(id => id && id !== 0)
+        );
+        const attempted = new Set(
+          sourcesRef.current
+            .filter(s => s.enabled && (s.feedUrl ?? '').length > 0)
+            .map(s => s.id)
+        );
+        setSources(prev => prev.map(s => {
+          if (!attempted.has(s.id)) return s;
+          return failedIds.has(s.id)
+            ? { ...s, health: 'warn' }
+            : { ...s, health: 'ok', lastFetchAt: now };
+        }));
+      });
+      if (cancelled) off();
+      else unlisten = off;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten();
     };
-
-    const now = new Date();
-    const todaySlot = new Date(now);
-    todaySlot.setHours(h, m, 0, 0);
-
-    const lastRun = archives[0]?.runAt ? new Date(archives[0].runAt) : null;
-    const ranTodayAlready = lastRun && lastRun >= todaySlot;
-
-    if (todaySlot <= now && !ranTodayAlready) {
-      // We missed today's slot (or just reached it). Fire now.
-      fire();
-      // Don't also setTimeout — the new archive entry will re-trigger this
-      // effect and schedule tomorrow.
-      return;
-    }
-
-    const next = todaySlot > now
-      ? todaySlot
-      : new Date(todaySlot.getTime() + 24 * 60 * 60 * 1000);
-    const delay = next.getTime() - now.getTime();
-    const timer = setTimeout(fire, delay);
-    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, scheduleEnabled, scheduleTime, archives]);
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;

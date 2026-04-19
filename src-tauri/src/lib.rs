@@ -1,5 +1,7 @@
 mod ingest;
 mod keychain;
+mod schedule_plist;
+mod scheduler;
 mod summarize;
 mod tray;
 
@@ -47,6 +49,11 @@ pub fn run() {
                 let _ = main.hide();
             }
 
+            // Kick off the daily-briefing scheduler. One in-process tokio
+            // loop replaces the old JS setTimeout path in App.jsx, reading
+            // sources/categories/prefs from the Tauri store directly.
+            scheduler::spawn(app.handle().clone());
+
             let window = main.clone();
             let app_handle = app.handle().clone();
             main.on_window_event(move |event| {
@@ -71,6 +78,7 @@ pub fn run() {
             keychain::clear_clerk_db_jwt,
             tray::set_tray_status,
             tray::set_tray_articles,
+            schedule_plist::sync_schedule_plist,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -85,6 +85,16 @@ pub async fn ingest_briefing(
     categories: Vec<CategoryInput>,
     lens: Option<String>,
 ) -> Result<BriefingResponse, String> {
+    run_briefing(sources, categories, lens).await
+}
+
+/// Library-style entry point, callable from the scheduler. `ingest_briefing`
+/// is a thin `#[tauri::command]` wrapper around this.
+pub async fn run_briefing(
+    sources: Vec<SourceInput>,
+    categories: Vec<CategoryInput>,
+    lens: Option<String>,
+) -> Result<BriefingResponse, String> {
     let client = reqwest::Client::builder()
         .user_agent("Radar/0.1 (desktop news briefing)")
         .timeout(Duration::from_secs(15))
