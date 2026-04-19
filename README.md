@@ -26,7 +26,15 @@ Grab the latest signed build from the [Releases page](https://github.com/alamani
 - macOS (Apple Silicon): `Radar_<version>_aarch64.dmg`
 - Windows: `Radar_<version>_x64-setup.exe`
 
-macOS and Windows builds are not yet code-signed, so first launch will show a Gatekeeper / SmartScreen warning. Right-click → Open on macOS; "More info" → "Run anyway" on Windows.
+macOS and Windows builds are not yet code-signed. First launch will show a warning that isn't actually telling the truth:
+
+- **macOS:** "Radar is damaged and can't be opened." Not damaged — just not signed by an Apple Developer. Strip the quarantine flag once and it opens forever:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Radar.app
+  ```
+- **Windows:** SmartScreen warns about an unrecognized publisher. Click "More info" → "Run anyway."
+
+This goes away entirely once the macOS and Windows builds are code-signed — planned for a future release.
 
 ## Development
 

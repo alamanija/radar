@@ -231,12 +231,22 @@ function UpdatesControl() {
   }
 
   // 'idle' and 'uptodate'
+  const meta = [
+    appVersion ? `v${appVersion}` : null,
+    state === 'uptodate' ? 'up to date' : null,
+  ].filter(Boolean).join(' · ');
   return (
-    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--text-3)' }}>
-        {appVersion ? `v${appVersion}` : ''}
-        {state === 'uptodate' ? ' · up to date' : ''}
-      </span>
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+      {meta && (
+        <span style={{
+          fontFamily: 'JetBrains Mono, monospace',
+          fontSize: 12,
+          color: 'var(--text-3)',
+          fontVariantNumeric: 'tabular-nums',
+        }}>
+          {meta}
+        </span>
+      )}
       <button className="pill" onClick={check}>Check for updates</button>
     </div>
   );
