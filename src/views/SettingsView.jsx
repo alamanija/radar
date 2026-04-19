@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { SignedIn, SignedOut, SignInButton, UserButton, useAuth, useClerk, useUser } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, SignIn, UserButton, useAuth, useClerk, useUser } from '@clerk/clerk-react';
 import { Icon } from '../components/Icon.jsx';
 import { Toggle } from '../components/Toggle.jsx';
 import { useUpdater } from '../hooks/useUpdater.js';
@@ -252,6 +252,35 @@ function UpdatesControl() {
   );
 }
 
+// Inline sign-in for signed-out users. Uses Clerk's full `<SignIn />`
+// component rendered in-context rather than `<SignInButton />` because:
+//
+//   - `mode="modal"` breaks in WebKit / Tauri webviews due to third-party
+//     cookie isolation (session set in the iframe isn't readable from the
+//     parent window).
+//   - The redirect flow breaks in shipped Tauri builds because browsers
+//     refuse HTTPS → `tauri://localhost` redirects as a security measure.
+//
+// Rendering `<SignIn />` keeps the whole flow in the app's own origin so
+// neither restriction bites. The form is hidden behind a "Sign in" button
+// so we don't eat a large block of the Settings page when the user hasn't
+// asked for it.
+function SignInPanel() {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return <button className="pill" onClick={() => setOpen(true)}>Sign in</button>;
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+      <SignIn
+        routing="virtual"
+        appearance={{ elements: { footer: { display: 'none' } } }}
+      />
+      <button className="pill" onClick={() => setOpen(false)}>Cancel</button>
+    </div>
+  );
+}
+
 function AccountControl() {
   const { user } = useUser();
   const { isLoaded } = useAuth();
@@ -298,16 +327,7 @@ function AccountControl() {
         </div>
       </SignedIn>
       <SignedOut>
-        {/* Redirect flow (no `mode="modal"`). Modal mode is fragile in
-            cross-origin contexts because it relies on cookies set by
-            the Clerk-hosted iframe being readable from the app's
-            top-level origin — WebKit (and Tauri's macOS webview) isolate
-            these. Redirect flow keeps auth on the app origin so session
-            state survives. Redirect destination is configured on
-            ClerkProvider (`signInFallbackRedirectUrl`). */}
-        <SignInButton>
-          <button className="pill">Sign in</button>
-        </SignInButton>
+        <SignInPanel />
       </SignedOut>
     </>
   );
