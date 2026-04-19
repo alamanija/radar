@@ -1,0 +1,40 @@
+# JS frontend + its build artefacts. The server doesn't need any of this.
+node_modules
+dist
+.vite
+*.log
+
+# Rust artefacts — always rebuilt fresh in the builder stage.
+target
+**/target
+
+# Editor / OS noise.
+.DS_Store
+.idea
+.vscode
+*.swp
+
+# Tauri desktop shell. Its manifest stays in the workspace but the source
+# isn't needed to build the server, and its `icons/` directory can be huge.
+src-tauri/gen
+src-tauri/icons
+src-tauri/target
+
+# Secrets and environment files. Never bake these into an image.
+.env
+.env.*
+!.env.example
+radar-server/.env
+!radar-server/.env.example
+
+# Git metadata.
+.git
+.gitignore
+.github
+
+# Docs and project-internal tooling that the binary doesn't need.
+radar-handoff
+README.md
+CLAUDE.md
+LICENSE.md
+.claude

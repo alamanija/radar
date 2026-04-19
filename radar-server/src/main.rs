@@ -53,7 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL not set")?;
-    let port: u16 = std::env::var("SERVER_PORT")
+    // Port resolution: `PORT` is the de-facto PaaS convention (Render, Fly,
+    // Heroku, Railway all set this automatically). `SERVER_PORT` is our
+    // local-dev override; 8787 is the final fallback.
+    let port: u16 = std::env::var("PORT")
+        .or_else(|_| std::env::var("SERVER_PORT"))
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8787);

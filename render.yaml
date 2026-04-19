@@ -1,0 +1,41 @@
+# Render blueprint for `radar-server`. Apply from the Render dashboard —
+# New → Blueprint → point at this repo. Secret values (`DATABASE_URL`,
+# `CLERK_JWKS_URL`, `CLERK_ISSUER`) are marked `sync: false`; Render will
+# prompt you for them the first time, then keep them encrypted.
+#
+# Free tier notes:
+#   - The service spins down after ~15 min of idle. First request after
+#     sleep pays a ~30s cold-start penalty. Pair with an uptime pinger
+#     (cron-job.org, UptimeRobot) hitting /healthz every ~14 min to keep
+#     it warm during the hours you care about.
+#   - Docker build minutes are unmetered on the free tier.
+#   - No managed Postgres here — point DATABASE_URL at a free Neon
+#     database (https://neon.tech). Render's own free Postgres trial
+#     expires after 90 days, so don't use it.
+
+services:
+  - type: web
+    name: radar-server
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # Public values — safe to live in the blueprint.
+      - key: RUST_LOG
+        value: radar_server=info,tower_http=info
+      - key: CORS_ORIGINS
+        # Tauri 2 webview origins. `tauri://localhost` covers macOS/Linux,
+        # `https://tauri.localhost` covers Windows WebView2. Add any web
+        # origin you ship here later (e.g. `https://radar.app`).
+        value: tauri://localhost,https://tauri.localhost
+
+      # Secrets — set from the Render dashboard on first deploy. `sync:
+      # false` keeps them out of this file and the git log.
+      - key: DATABASE_URL
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: CLERK_ISSUER
+        sync: false
