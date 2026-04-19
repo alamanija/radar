@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, SignInButton, UserButton, useAuth, useClerk, useUser } from '@clerk/clerk-react';
 import { Icon } from '../components/Icon.jsx';
 import { Toggle } from '../components/Toggle.jsx';
 import { useUpdater } from '../hooks/useUpdater.js';
@@ -254,6 +254,32 @@ function UpdatesControl() {
 
 function AccountControl() {
   const { user } = useUser();
+  const { isLoaded } = useAuth();
+  const clerk = useClerk();
+
+  // Clerk loads asynchronously. `isLoaded=false` is the normal state for
+  // roughly the first 100-500ms after mount. If it stays false indefinitely,
+  // something's blocking Clerk from initialising (most commonly unverified
+  // production DNS, a publishable key from the wrong instance, or the
+  // Tauri origin not being whitelisted in the Clerk dashboard).
+  if (!isLoaded) {
+    // Rough hint at why it might be stuck. `clerk.frontendApi` is the
+    // domain the SDK is trying to reach; if it looks wrong, that's a clue.
+    const api = clerk?.frontendApi ?? '(unknown)';
+    return (
+      <span
+        style={{
+          fontFamily: 'JetBrains Mono, monospace',
+          fontSize: 11.5,
+          color: 'var(--text-3)',
+        }}
+        title={`Clerk hasn't initialised. Frontend API: ${api}`}
+      >
+        Loading auth…
+      </span>
+    );
+  }
+
   return (
     <>
       <SignedIn>
