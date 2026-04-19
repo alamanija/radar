@@ -1,0 +1,7 @@
+# GitHub reads this file to render a "Sponsor" button at the top of the
+# repo page. One entry per funding platform. Platforms GitHub accepts
+# include: github, patreon, open_collective, ko_fi, tidelift, community_bridge,
+# liberapay, issuehunt, otechie, lfx_crowdfunding, buy_me_a_coffee, thanks_dev,
+# polar, custom (which accepts arbitrary URLs).
+
+ko_fi: alamanija
