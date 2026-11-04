@@ -87,3 +87,9 @@ async fn accepts_oauth_issuer_when_configured() {
     assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), true)).await.is_ok());
     assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.is_err());
 }
+
+#[tokio::test]
+async fn rejects_oauth_jwt_missing_client_identifiers() {
+    let t = sign(json!({"iss": ISS, "scope": "openid profile"}));
+    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.is_err());
+}

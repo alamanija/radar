@@ -65,10 +65,8 @@ pub async fn verify(
         let is_oauth = claims.client_id.is_some() || claims.scope.is_some() || claims.scp.is_some();
         if is_oauth {
             let actual = claims.client_id.as_ref().or(claims.azp.as_ref());
-            if let Some(actual) = actual {
-                if actual != expected {
-                    return Err(AppError::Unauthorized("client_id mismatch".into()));
-                }
+            if actual != Some(expected) {
+                return Err(AppError::Unauthorized("client_id mismatch".into()));
             }
         }
     }
