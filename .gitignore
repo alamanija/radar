@@ -13,3 +13,6 @@ radar-server/.env
 .DS_Store
 .idea/
 .vscode/
+
+.superpowers/
+.claude/worktrees/
