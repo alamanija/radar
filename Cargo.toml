@@ -1,8 +1,9 @@
 [workspace]
-members = ["src-tauri", "radar-server"]
+members = ["radar-core", "radar-server"]
 resolver = "2"
 
 [workspace.package]
+version = "0.2.22"
 edition = "2021"
 license = "MIT"
 publish = false

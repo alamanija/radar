@@ -23,6 +23,7 @@
 //!
 //! `sync_schedule_wake` is idempotent: identical config → no-op.
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -31,7 +32,7 @@ use std::process::Command;
 const LABEL: &str = "com.radar.scheduler";
 
 /// Idempotent sync. `enabled=false` removes the wake entry entirely.
-#[tauri::command]
+#[allow(clippy::needless_return)] // cfg-gated blocks need explicit returns
 pub fn sync_schedule_wake(
     enabled: bool,
     hour: Option<u32>,

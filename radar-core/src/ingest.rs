@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use feed_rs::parser;
 use futures::future::join_all;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::keychain;
 use crate::summarize;
+use crate::types::{Article, BriefingResponse, SourceError};
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -30,41 +31,6 @@ pub struct CategoryInput {
     pub accent: String,
 }
 
-#[derive(Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Article {
-    pub id: u64,
-    pub title: String,
-    pub source: String,
-    pub source_id: u32,
-    pub category: String,
-    pub category_label: String,
-    pub summary: String,
-    pub published: String,
-    pub published_at: Option<DateTime<Utc>>,
-    pub read: bool,
-    pub bookmarked: bool,
-    pub accent: String,
-    pub url: String,
-    pub image_url: Option<String>,
-}
-
-#[derive(Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceError {
-    pub source_id: u32,
-    pub source_name: String,
-    pub message: String,
-}
-
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct BriefingResponse {
-    pub articles: Vec<Article>,
-    pub errors: Vec<SourceError>,
-    pub fetched_at: DateTime<Utc>,
-}
-
 /// Resolve a category id to (label, accent), with a safe fallback for ids
 /// that no longer exist in the user's category list (e.g. they deleted a
 /// category a source still refers to, or Claude returned something unknown).
@@ -79,17 +45,8 @@ fn resolve(cats: &HashMap<String, CategoryInput>, id: &str) -> (String, String, 
     }
 }
 
-#[tauri::command]
-pub async fn ingest_briefing(
-    sources: Vec<SourceInput>,
-    categories: Vec<CategoryInput>,
-    lens: Option<String>,
-) -> Result<BriefingResponse, String> {
-    run_briefing(sources, categories, lens).await
-}
-
-/// Library-style entry point, callable from the scheduler. `ingest_briefing`
-/// is a thin `#[tauri::command]` wrapper around this.
+/// Fetch every source with a feed URL, optionally summarize via Claude, and
+/// return the briefing.
 pub async fn run_briefing(
     sources: Vec<SourceInput>,
     categories: Vec<CategoryInput>,
@@ -153,7 +110,8 @@ pub async fn run_briefing(
             for result in enhanced {
                 match result {
                     Ok(a) => articles.push(a),
-                    Err((a, msg)) => {
+                    Err(boxed) => {
+                        let (a, msg) = *boxed;
                         claude_failures += 1;
                         if first_claude_error.is_none() {
                             first_claude_error = Some(msg);
@@ -197,7 +155,7 @@ async fn enhance(
     cats: &HashMap<String, CategoryInput>,
     claude_cats: &[(String, String)],
     lens: Option<&str>,
-) -> Result<Article, (Article, String)> {
+) -> Result<Article, Box<(Article, String)>> {
     match summarize::summarize(
         client,
         api_key,
@@ -217,7 +175,7 @@ async fn enhance(
             article.accent = accent;
             Ok(article)
         }
-        Err(msg) => Err((article, msg)),
+        Err(msg) => Err(Box::new((article, msg))),
     }
 }
 
@@ -439,4 +397,36 @@ fn hash_id(source_id: u32, url: &str) -> u64 {
     source_id.hash(&mut h);
     url.hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_html_and_collapses_whitespace() {
+        assert_eq!(strip_html_and_truncate("<p>a  <b>b</b></p>", 280), "a b");
+    }
+
+    #[test]
+    fn truncates_with_ellipsis() {
+        let out = strip_html_and_truncate(&"x".repeat(400), 280);
+        assert_eq!(out.chars().count(), 280);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn first_img_src_skips_data_urls() {
+        let html = r#"<img src="data:image/gif;base64,AAA"><img alt="x" src='https://e.com/a.png'>"#;
+        assert_eq!(first_img_src(html).as_deref(), Some("https://e.com/a.png"));
+    }
+
+    #[test]
+    fn resolve_unknown_falls_back() {
+        let cats = HashMap::new();
+        assert_eq!(
+            resolve(&cats, "nope"),
+            ("uncategorized".into(), "Uncategorized".into(), "ink".into())
+        );
+    }
 }
