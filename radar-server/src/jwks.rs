@@ -48,6 +48,20 @@ impl JwksCache {
         })
     }
 
+    /// Test-only: a cache pre-seeded with keys, never touching the network.
+    #[cfg(test)]
+    pub fn with_keys(keys: Vec<(String, DecodingKey)>) -> Arc<Self> {
+        let keys = keys.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+        Arc::new(Self {
+            http: reqwest::Client::new(),
+            url: String::new(),
+            inner: RwLock::new(Some(CacheInner {
+                keys,
+                fetched_at: Instant::now(),
+            })),
+        })
+    }
+
     /// Look up a decoding key by `kid`, refetching the JWKS set if the key
     /// isn't cached or the cache is stale.
     pub async fn get(&self, kid: &str) -> AppResult<Arc<DecodingKey>> {

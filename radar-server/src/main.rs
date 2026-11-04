@@ -65,6 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("CLERK_JWKS_URL").map_err(|_| "CLERK_JWKS_URL not set")?;
     let clerk_issuer =
         std::env::var("CLERK_ISSUER").map_err(|_| "CLERK_ISSUER not set")?;
+    let non_empty = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let mut issuers = vec![clerk_issuer];
+    if let Some(i) = non_empty("CLERK_OAUTH_ISSUER") {
+        issuers.push(i);
+    }
+    let verify = clerk::VerifyConfig {
+        issuers,
+        oauth_client_id: non_empty("CLERK_OAUTH_CLIENT_ID"),
+    };
 
     let db = PgPoolOptions::new()
         .max_connections(10)
@@ -81,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         db,
         jwks: JwksCache::new(http, clerk_jwks_url),
-        clerk_issuer: Arc::new(clerk_issuer),
+        verify: Arc::new(verify),
     };
 
     // Per-user token bucket. Capacity 40 covers bursty editing (typing +
