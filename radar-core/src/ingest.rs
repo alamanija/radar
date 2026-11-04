@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use feed_rs::parser;
 use futures::future::join_all;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,7 +59,10 @@ pub async fn run_briefing(
         .map_err(|e| format!("http client: {e}"))?;
 
     let cat_map: Arc<HashMap<String, CategoryInput>> = Arc::new(
-        categories.iter().map(|c| (c.id.clone(), c.clone())).collect(),
+        categories
+            .iter()
+            .map(|c| (c.id.clone(), c.clone()))
+            .collect(),
     );
 
     let targets: Vec<SourceInput> = sources
@@ -100,7 +103,17 @@ pub async fn run_briefing(
                 let cats = Arc::clone(&cat_map);
                 let claude_cats = Arc::clone(&claude_cats);
                 let lens = Arc::clone(&lens_arc);
-                async move { enhance(&client, &api_key, article, &cats, &claude_cats, lens.as_deref()).await }
+                async move {
+                    enhance(
+                        &client,
+                        &api_key,
+                        article,
+                        &cats,
+                        &claude_cats,
+                        lens.as_deref(),
+                    )
+                    .await
+                }
             });
             let enhanced = join_all(futures).await;
 
@@ -285,7 +298,10 @@ fn strip_html_and_truncate(input: &str, max_chars: usize) -> String {
     }
     let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() > max_chars {
-        let mut truncated: String = collapsed.chars().take(max_chars.saturating_sub(1)).collect();
+        let mut truncated: String = collapsed
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect();
         truncated.push('…');
         truncated
     } else {
@@ -320,9 +336,12 @@ fn extract_image(entry: &feed_rs::model::Entry, raw_html: &str) -> Option<String
                 if let Some(url) = &c.url {
                     let s = url.as_str();
                     let lower = s.to_ascii_lowercase();
-                    if lower.ends_with(".jpg") || lower.ends_with(".jpeg")
-                        || lower.ends_with(".png") || lower.ends_with(".webp")
-                        || lower.ends_with(".gif") || lower.ends_with(".avif")
+                    if lower.ends_with(".jpg")
+                        || lower.ends_with(".jpeg")
+                        || lower.ends_with(".png")
+                        || lower.ends_with(".webp")
+                        || lower.ends_with(".gif")
+                        || lower.ends_with(".avif")
                     {
                         return Some(s.to_string());
                     }
@@ -330,7 +349,11 @@ fn extract_image(entry: &feed_rs::model::Entry, raw_html: &str) -> Option<String
             }
         }
     }
-    let body = entry.content.as_ref().and_then(|c| c.body.as_deref()).unwrap_or("");
+    let body = entry
+        .content
+        .as_ref()
+        .and_then(|c| c.body.as_deref())
+        .unwrap_or("");
     first_img_src(body).or_else(|| first_img_src(raw_html))
 }
 
@@ -347,7 +370,9 @@ fn first_img_src(html: &str) -> Option<String> {
             && bytes[i + 3].eq_ignore_ascii_case(&b'g')
             && bytes[i + 4].is_ascii_whitespace()
         {
-            let Some(rel) = html[i..].find('>') else { break };
+            let Some(rel) = html[i..].find('>') else {
+                break;
+            };
             let tag = &html[i..i + rel];
             if let Some(src) = attr_value(tag, "src") {
                 if !src.starts_with("data:") {
@@ -371,8 +396,7 @@ fn attr_value(tag: &str, name: &str) -> Option<String> {
     while let Some(idx) = lower[search_from..].find(&key) {
         let start = search_from + idx;
         // must be preceded by whitespace or `<img` boundary
-        let before_ok = start == 0
-            || lower.as_bytes()[start - 1].is_ascii_whitespace();
+        let before_ok = start == 0 || lower.as_bytes()[start - 1].is_ascii_whitespace();
         let after = start + key.len();
         let rest = &tag[after..];
         let rest_trimmed = rest.trim_start();
@@ -417,7 +441,8 @@ mod tests {
 
     #[test]
     fn first_img_src_skips_data_urls() {
-        let html = r#"<img src="data:image/gif;base64,AAA"><img alt="x" src='https://e.com/a.png'>"#;
+        let html =
+            r#"<img src="data:image/gif;base64,AAA"><img alt="x" src='https://e.com/a.png'>"#;
         assert_eq!(first_img_src(html).as_deref(), Some("https://e.com/a.png"));
     }
 

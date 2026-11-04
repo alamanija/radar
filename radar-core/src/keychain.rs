@@ -58,6 +58,13 @@ fn preview(key: &str) -> String {
         return "••••".to_string();
     }
     let prefix: String = chars.iter().take(7).collect();
-    let suffix: String = chars.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+    let suffix: String = chars
+        .iter()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("{prefix}••••••{suffix}")
 }

@@ -212,6 +212,16 @@ pub struct Profile {
     pub lens: String,
 }
 
+/// Signed-in account (Clerk identity). Wire shape is camelCase.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    pub image_url: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

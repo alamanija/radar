@@ -127,8 +127,7 @@ pub async fn summarize(
         })
         .ok_or_else(|| "no text block in response".to_string())?;
 
-    let parsed: Parsed =
-        serde_json::from_str(&text).map_err(|e| format!("parse json: {e}"))?;
+    let parsed: Parsed = serde_json::from_str(&text).map_err(|e| format!("parse json: {e}"))?;
 
     Ok(Summary {
         summary: parsed.summary,

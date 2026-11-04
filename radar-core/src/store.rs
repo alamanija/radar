@@ -157,7 +157,10 @@ pub fn load(path: &Path) -> Snapshot {
     };
     if dropped {
         match backup_copy(path, "bak") {
-            Ok(b) => log::warn!("[store] data dropped on load; original kept at {}", b.display()),
+            Ok(b) => log::warn!(
+                "[store] data dropped on load; original kept at {}",
+                b.display()
+            ),
             Err(e) => log::warn!("[store] data dropped on load and backup failed: {e}"),
         }
     }
@@ -267,7 +270,11 @@ mod tests {
         let backups: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("radar.json.corrupt-"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("radar.json.corrupt-")
+            })
             .collect();
         assert_eq!(backups.len(), 1);
         assert_eq!(fs::read_to_string(backups[0].path()).unwrap(), "{not json");
@@ -277,7 +284,11 @@ mod tests {
     fn malformed_key_only_defaults_that_key() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("radar.json");
-        fs::write(&p, json!({"sources": "oops", "profile": {"name": "Z"}}).to_string()).unwrap();
+        fs::write(
+            &p,
+            json!({"sources": "oops", "profile": {"name": "Z"}}).to_string(),
+        )
+        .unwrap();
         let s = load(&p);
         assert!(s.sources.is_empty());
         assert_eq!(s.profile.name, "Z");
@@ -301,7 +312,11 @@ mod tests {
     fn save_preserves_unknown_keys() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("radar.json");
-        fs::write(&p, json!({"future-key": {"a": 1}, "profile": {"name": "Old"}}).to_string()).unwrap();
+        fs::write(
+            &p,
+            json!({"future-key": {"a": 1}, "profile": {"name": "Old"}}).to_string(),
+        )
+        .unwrap();
         let mut snap = load(&p);
         snap.profile.name = "New".into();
         save(&p, &snap).unwrap();

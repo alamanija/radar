@@ -213,12 +213,7 @@ mod windows {
         // making this a single-shot idempotent upsert.
         let status = Command::new("schtasks")
             .args([
-                "/Create",
-                "/SC", "DAILY",
-                "/TN", TASK_NAME,
-                "/TR", &task_run,
-                "/ST", &time,
-                "/F",
+                "/Create", "/SC", "DAILY", "/TN", TASK_NAME, "/TR", &task_run, "/ST", &time, "/F",
             ])
             .status()
             .map_err(|e| format!("spawn schtasks: {e}"))?;

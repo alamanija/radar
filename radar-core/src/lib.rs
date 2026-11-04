@@ -3,10 +3,13 @@
 
 pub mod ingest;
 pub mod keychain;
+pub mod model;
 pub mod schedule;
 pub mod schedule_wake;
+pub mod search;
 pub mod store;
 pub mod summarize;
+pub mod text;
 pub mod types;
 
 use std::sync::LazyLock;

@@ -83,7 +83,11 @@ mod tests {
 
     #[test]
     fn should_fire_after_slot_with_fresh_last_run_is_false() {
-        assert!(!should_fire(&prefs(true, "07:30"), Some(at(8, 0)), at(9, 0)));
+        assert!(!should_fire(
+            &prefs(true, "07:30"),
+            Some(at(8, 0)),
+            at(9, 0)
+        ));
     }
 
     #[test]
