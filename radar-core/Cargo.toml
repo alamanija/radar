@@ -13,9 +13,14 @@ feed-rs = "2"
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 dirs = "5"
 log = "0.4"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.9"
+url = "2"
 
 [dev-dependencies]
+httpmock = "0.9.0"
 tempfile = "3"

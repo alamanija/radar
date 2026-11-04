@@ -1,6 +1,7 @@
 //! UI-free backend for Radar: feed ingestion, Claude summarization,
 //! keychain access, schedule logic and shared wire types.
 
+pub mod auth;
 pub mod ingest;
 pub mod keychain;
 pub mod model;
