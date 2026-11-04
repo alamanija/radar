@@ -1,5 +1,5 @@
 [workspace]
-members = ["radar-core", "radar-server"]
+members = ["radar-core", "radar-server", "radar-app"]
 resolver = "2"
 
 [workspace.package]
@@ -7,3 +7,22 @@ version = "0.2.22"
 edition = "2021"
 license = "MIT"
 publish = false
+
+# Per the GPUI Kit install guide: optimize GPUI and Kit in dev builds so the
+# debug app renders at full speed (doesn't speed up compilation). Proc-macro
+# crates are deliberately left out. gpui-base and the platform backends are
+# added because rendering and text layout live there too.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-windows = { opt-level = 3 }
+gpui-pre-macos = { opt-level = 3 }
+gpui-pre-linux = { opt-level = 3 }
+gpui-pre-wgpu = { opt-level = 3 }
+gpui-base = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
