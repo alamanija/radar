@@ -131,6 +131,27 @@ fn d_true() -> bool {
     true
 }
 
+/// Per-field lenient deserialize: a wrong type, unknown enum string or null
+/// falls back to the field default so one bad field never wipes the rest.
+fn lenient<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_default())
+}
+
+fn lenient_true<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or(true))
+}
+
+fn lenient_time<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_else(|_| d_time()))
+}
+
 fn d_time() -> String {
     "07:30".to_string()
 }
@@ -138,27 +159,27 @@ fn d_time() -> String {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub theme: Theme,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub view_mode: ViewMode,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub density: Density,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub accent: Accent,
-    #[serde(default = "d_true")]
+    #[serde(default = "d_true", deserialize_with = "lenient_true")]
     pub use_serif: bool,
-    #[serde(default = "d_true")]
+    #[serde(default = "d_true", deserialize_with = "lenient_true")]
     pub show_accent: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub sidebar_collapsed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub view: View,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub run_at_launch: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub schedule_enabled: bool,
-    #[serde(default = "d_time")]
+    #[serde(default = "d_time", deserialize_with = "lenient_time")]
     pub schedule_time: String,
 }
 
@@ -183,11 +204,11 @@ impl Default for Prefs {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub role: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub lens: String,
 }
 
@@ -246,6 +267,35 @@ mod tests {
         assert_eq!(v["accent"], "Slate");
         assert_eq!(v["view"], "categories");
         assert_eq!(v["scheduleTime"], "07:30");
+    }
+
+    #[test]
+    fn prefs_unknown_enum_falls_back_per_field() {
+        let p: Prefs = serde_json::from_value(json!({
+            "theme": "sepia", "viewMode": "list", "density": null,
+            "useSerif": "yes", "scheduleTime": 5, "scheduleEnabled": true,
+            "accent": "Rust", "view": "nope"
+        }))
+        .unwrap();
+        assert_eq!(p.theme, Theme::Light);
+        assert_eq!(p.view_mode, ViewMode::List);
+        assert_eq!(p.density, Density::Cozy);
+        assert!(p.use_serif);
+        assert_eq!(p.schedule_time, "07:30");
+        assert!(p.schedule_enabled);
+        assert_eq!(p.accent, Accent::Rust);
+        assert_eq!(p.view, View::Briefing);
+    }
+
+    #[test]
+    fn profile_null_fields_default() {
+        let p: Profile = serde_json::from_value(json!({
+            "name": null, "role": "Designer", "lens": 7
+        }))
+        .unwrap();
+        assert_eq!(p.name, "");
+        assert_eq!(p.role, "Designer");
+        assert_eq!(p.lens, "");
     }
 
     #[test]

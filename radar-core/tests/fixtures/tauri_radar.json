@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "prefs": {
+    "view": "briefing",
+    "theme": "dark",
+    "viewMode": "list",
+    "sidebarCollapsed": true,
+    "runAtLaunch": true,
+    "scheduleEnabled": true,
+    "scheduleTime": "08:15",
+    "density": "compact",
+    "accent": "Olive",
+    "useSerif": false,
+    "showAccent": true
+  },
+  "sources": [
+    {
+      "id": 1,
+      "name": "Dieline",
+      "category": "Packaging",
+      "feedUrl": "https://thedieline.com/feed/",
+      "enabled": true,
+      "isDefault": true,
+      "lastFetchAt": 1767261000000,
+      "health": "ok"
+    },
+    {
+      "id": 2,
+      "name": "Brand New",
+      "category": "branding",
+      "feedUrl": null,
+      "enabled": false,
+      "isDefault": false,
+      "lastFetchAt": null,
+      "health": "warn"
+    }
+  ],
+  "articles": [
+    {
+      "id": 1001,
+      "title": "A fresh take on oat milk cartons",
+      "source": "Dieline",
+      "sourceId": 1,
+      "category": "packaging",
+      "categoryLabel": "Packaging",
+      "summary": "A studio rethinks the carton.",
+      "published": "2h ago",
+      "publishedAt": "2026-01-01T10:00:00Z",
+      "read": false,
+      "bookmarked": true,
+      "accent": "camel",
+      "url": "https://example.com/oat",
+      "imageUrl": "https://example.com/oat.png"
+    },
+    {
+      "id": 1002,
+      "title": "Rebrand of a regional bank",
+      "source": "Brand New",
+      "sourceId": 2,
+      "category": "branding",
+      "categoryLabel": "Branding",
+      "summary": "Bold type, quiet colour.",
+      "published": "1d ago",
+      "publishedAt": null,
+      "read": true,
+      "bookmarked": false,
+      "accent": "olive",
+      "url": "https://example.com/bank",
+      "imageUrl": null
+    }
+  ],
+  "archives": [
+    {
+      "id": 1767261000000,
+      "runAt": "2026-01-01T09:30:00.000Z",
+      "articles": [
+        {
+          "id": 1001,
+          "title": "A fresh take on oat milk cartons",
+          "source": "Dieline",
+          "sourceId": 1,
+          "category": "packaging",
+          "categoryLabel": "Packaging",
+          "summary": "A studio rethinks the carton.",
+          "published": "2h ago",
+          "publishedAt": "2026-01-01T10:00:00Z",
+          "read": false,
+          "bookmarked": false,
+          "accent": "camel",
+          "url": "https://example.com/oat",
+          "imageUrl": null
+        }
+      ],
+      "errors": [
+        { "sourceId": 2, "sourceName": "Brand New", "message": "timeout" }
+      ]
+    }
+  ],
+  "categories": [
+    { "id": "packaging", "label": "Packaging", "description": "Packaging design and dielines.", "accent": "camel" },
+    { "id": "branding", "label": "Branding", "description": "Identity and rebrands.", "accent": "olive" }
+  ],
+  "profile": { "name": "Stefan", "role": "Art director", "lens": "I run a small packaging studio." },
+  "sync-queue": [
+    {
+      "id": "q-1",
+      "path": "/sync/prefs",
+      "method": "PUT",
+      "body": "{\"theme\":\"dark\"}",
+      "headers": { "Content-Type": "application/json" },
+      "groupKey": "PUT /sync/prefs",
+      "accountId": "user_abc",
+      "tries": 0,
+      "queuedAt": 1767261000000
+    },
+    {
+      "id": "q-2",
+      "path": "/sync/article-states/1001",
+      "method": "PATCH",
+      "body": "{\"bookmarked\":true}",
+      "headers": { "Content-Type": "application/json" },
+      "groupKey": "article:1001",
+      "accountId": "user_abc",
+      "tries": 2,
+      "queuedAt": 1767261005000
+    }
+  ]
+}

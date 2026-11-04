@@ -5,6 +5,7 @@ pub mod ingest;
 pub mod keychain;
 pub mod schedule;
 pub mod schedule_wake;
+pub mod store;
 pub mod summarize;
 pub mod types;
 
