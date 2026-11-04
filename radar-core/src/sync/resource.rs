@@ -5,6 +5,16 @@
 //! on sign-in, and when [`SyncedResource::needs_push`] is true after an edit
 //! settles, [`SyncedResource::push`]. Any merged value returned must be
 //! written back into the model.
+//!
+//! App obligations:
+//! - A failed `pull` leaves `pulled` false, so nothing is pushed for that
+//!   resource until a pull succeeds. The app must retry failed pulls (on a
+//!   timer or when the network returns). Edits made in the meantime are kept:
+//!   the successful pull pushes them instead of taking the server's copy.
+//! - Call `reset` on sign-out / account switch, then `pull` for the new
+//!   account.
+//! - Route `DrainReport::succeeded` bodies whose key equals
+//!   [`SyncedResource::group_key`] to [`SyncedResource::on_drained`].
 
 use super::queue::QueuedReq;
 use super::{Resp, SyncClient, SyncError};
@@ -24,6 +34,11 @@ pub trait SyncResource {
     fn stable_key(local: &Self::Local) -> String;
     /// Empty locals don't seed an empty server.
     fn is_empty(local: &Self::Local) -> bool;
+    /// The value to push when the local value was edited while pulls were
+    /// failing. Local wins by default; archives union-merge.
+    fn merge_offline(_remote: &Value, local: &Self::Local) -> Self::Local {
+        local.clone()
+    }
 }
 
 /// Sync bookkeeping for one resource.
@@ -34,6 +49,9 @@ pub struct SyncedResource<R: SyncResource> {
     pub server_key: Option<String>,
     /// Last server `updatedAt`, sent back as `If-Match: W/"<etag>"`.
     pub etag: Option<String>,
+    /// `stable_key(local)` at the first failed pull since the last success:
+    /// the baseline for detecting edits made while the server was unreachable.
+    pub failed_pull_key: Option<String>,
     _r: PhantomData<fn() -> R>,
 }
 
@@ -50,6 +68,7 @@ impl<R: SyncResource> std::fmt::Debug for SyncedResource<R> {
             .field("pulled", &self.pulled)
             .field("server_key", &self.server_key)
             .field("etag", &self.etag)
+            .field("failed_pull_key", &self.failed_pull_key)
             .finish()
     }
 }
@@ -60,6 +79,7 @@ impl<R: SyncResource> SyncedResource<R> {
             pulled: false,
             server_key: None,
             etag: None,
+            failed_pull_key: None,
             _r: PhantomData,
         }
     }
@@ -74,20 +94,58 @@ impl<R: SyncResource> SyncedResource<R> {
         self.pulled = false;
         self.server_key = None;
         self.etag = None;
+        self.failed_pull_key = None;
     }
 
     /// Pull on sign-in. Returns the value to store locally when the server
     /// has one. A 404 with a non-empty local seeds the server (no If-Match).
+    ///
     /// On error `pulled` stays false so pushes remain gated until a pull
     /// succeeds (the JS set `pulled` even on failure, which let a later push
-    /// without If-Match overwrite server data it never saw).
+    /// without If-Match overwrite server data it never saw), and the local
+    /// key is recorded. If a later pull finds the local value changed since
+    /// that first failure, the offline edit wins: it is merged with
+    /// [`SyncResource::merge_offline`] and pushed with the fresh etag, and the
+    /// pushed value is returned.
     pub async fn pull(
         &mut self,
         client: &SyncClient,
         local: &R::Local,
     ) -> Result<Option<R::Local>, SyncError> {
-        self.reset();
+        self.pulled = false;
+        self.server_key = None;
+        self.etag = None;
+        let baseline = self.failed_pull_key.take();
+        let diverged = baseline
+            .as_deref()
+            .is_some_and(|k| k != R::stable_key(local));
+        match self.pull_inner(client, local, diverged).await {
+            Ok(out) => {
+                self.pulled = true;
+                Ok(out)
+            }
+            Err(e) => {
+                self.failed_pull_key = baseline.or_else(|| Some(R::stable_key(local)));
+                Err(e)
+            }
+        }
+    }
+
+    async fn pull_inner(
+        &mut self,
+        client: &SyncClient,
+        local: &R::Local,
+        diverged: bool,
+    ) -> Result<Option<R::Local>, SyncError> {
         let out = match fetch::<R>(client).await? {
+            Some(remote) if diverged => {
+                self.etag = updated_at(&remote);
+                let mine = R::merge_offline(&remote, local);
+                // A 412 here (a write landed after our GET) falls back to
+                // push's refetch + from_remote merge.
+                let pushed = self.push(client, &mine).await?;
+                Some(pushed.unwrap_or(mine))
+            }
             Some(remote) => {
                 self.etag = updated_at(&remote);
                 let next = R::from_remote(&remote, local);
@@ -111,7 +169,6 @@ impl<R: SyncResource> SyncedResource<R> {
                 None
             }
         };
-        self.pulled = true;
         Ok(out)
     }
 
@@ -412,7 +469,7 @@ mod tests {
         assert_eq!(r.push(&c, &local).await.unwrap(), None);
         assert!(!r.needs_push(&local));
         assert_eq!(r.etag.as_deref(), Some("t1"));
-        let q = c.queued().await;
+        let q = c.queued();
         assert_eq!(q[0].group_key.as_deref(), Some("PUT:/sync/profile"));
         assert_eq!(
             q[0].headers,
@@ -554,14 +611,143 @@ mod tests {
         assert!(r.needs_push(&s));
     }
 
+    /// Fails one pull with a 500, then removes that mock.
+    async fn fail_pull<R: SyncResource>(
+        server: &MockServer,
+        c: &SyncClient,
+        r: &mut SyncedResource<R>,
+        local: &R::Local,
+    ) {
+        let down = server
+            .mock_async(|when, then| {
+                when.method(GET).path(R::ENDPOINT);
+                then.status(500);
+            })
+            .await;
+        assert!(r.pull(c, local).await.is_err());
+        assert!(!r.pulled);
+        down.delete_async().await;
+    }
+
+    #[tokio::test]
+    async fn offline_edit_after_failed_pull_wins_on_later_pull() {
+        let server = MockServer::start_async().await;
+        let c = client(&server.base_url());
+        let mut r = SyncedResource::<ProfileRes>::new();
+        fail_pull(&server, &c, &mut r, &profile("Ada")).await;
+        // Edited while the server was unreachable; a second failure must not
+        // forget the pre-edit baseline.
+        let edited = profile("Bea");
+        fail_pull(&server, &c, &mut r, &edited).await;
+
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/sync/profile");
+                then.status(200).json_body(
+                    json!({"name": "Srv", "role": null, "lens": null, "updatedAt": "t1"}),
+                );
+            })
+            .await;
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/profile")
+                    .header("if-match", "W/\"t1\"")
+                    .json_body(json!({"name": "Bea", "role": "AD", "lens": null}));
+                then.status(200).json_body(
+                    json!({"name": "Bea", "role": "AD", "lens": null, "updatedAt": "t2"}),
+                );
+            })
+            .await;
+        let got = r.pull(&c, &edited).await.unwrap();
+        put.assert_calls_async(1).await;
+        assert_eq!(got, Some(edited.clone()));
+        assert!(r.pulled);
+        assert_eq!(r.etag.as_deref(), Some("t2"));
+        assert!(!r.needs_push(&edited));
+        assert_eq!(r.failed_pull_key, None);
+    }
+
+    #[tokio::test]
+    async fn offline_archive_edit_unions_then_pushes() {
+        let server = MockServer::start_async().await;
+        let c = client(&server.base_url());
+        let mut r = SyncedResource::<ArchivesRes>::new();
+        let before = vec![archive(1, "2026-11-01T08:00:00Z")];
+        fail_pull(&server, &c, &mut r, &before).await;
+        let local = vec![
+            archive(2, "2026-11-04T08:00:00Z"),
+            archive(1, "2026-11-01T08:00:00Z"),
+        ];
+
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/sync/archives");
+                then.status(200).json_body(json!({
+                    "archives": [archive(3, "2026-11-03T08:00:00Z")], "updatedAt": "t1"
+                }));
+            })
+            .await;
+        let union = json!({"archives": [
+            archive(2, "2026-11-04T08:00:00Z"),
+            archive(3, "2026-11-03T08:00:00Z"),
+            archive(1, "2026-11-01T08:00:00Z"),
+        ]});
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/archives")
+                    .header("if-match", "W/\"t1\"")
+                    .json_body(union.clone());
+                let mut echo = union.clone();
+                echo["updatedAt"] = json!("t2");
+                then.status(200).json_body(echo);
+            })
+            .await;
+        let got = r.pull(&c, &local).await.unwrap().unwrap();
+        put.assert_calls_async(1).await;
+        assert_eq!(got.iter().map(|a| a.id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert!(!r.needs_push(&got));
+    }
+
+    #[tokio::test]
+    async fn no_divergence_after_failed_pull_takes_remote() {
+        let server = MockServer::start_async().await;
+        let c = client(&server.base_url());
+        let mut r = SyncedResource::<ProfileRes>::new();
+        fail_pull(&server, &c, &mut r, &profile("Ada")).await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/sync/profile");
+                then.status(200).json_body(
+                    json!({"name": "Srv", "role": null, "lens": null, "updatedAt": "t1"}),
+                );
+            })
+            .await;
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/profile");
+                then.status(200).json_body(json!({}));
+            })
+            .await;
+        let got = r.pull(&c, &profile("Ada")).await.unwrap().unwrap();
+        put.assert_calls_async(0).await;
+        assert_eq!(got.name, "Srv");
+        assert_eq!(r.etag.as_deref(), Some("t1"));
+        assert_eq!(r.failed_pull_key, None);
+        assert!(!r.needs_push(&got));
+    }
+
     #[test]
     fn reset_clears_guards() {
         let mut r = SyncedResource::<ProfileRes>::new();
         r.pulled = true;
         r.server_key = Some("k".into());
         r.etag = Some("e".into());
+        r.failed_pull_key = Some("f".into());
         r.reset();
         assert!(!r.pulled && r.server_key.is_none() && r.etag.is_none());
+        assert!(r.failed_pull_key.is_none());
         assert_eq!(
             SyncedResource::<ProfileRes>::group_key(),
             "PUT:/sync/profile"

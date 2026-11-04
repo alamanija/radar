@@ -655,16 +655,47 @@ impl Session {
             log::info!("[auth] access token expired with no refresh token; signing out");
             return Ok(self.replace_if_current(&old, None));
         };
-        match refresh_inner(&self.cfg, &refresh_token).await {
+        self.refresh_locked(&old, &refresh_token).await
+    }
+
+    /// Refreshes regardless of expiry (e.g. after the server answered 401
+    /// to a token we believed valid). Without a refresh token it returns the
+    /// current token. `Ok(None)` when signed out or the refresh token is
+    /// rejected.
+    pub async fn force_refresh(&self) -> Result<Option<String>, AuthError> {
+        let Some(before) = self.current() else {
+            return Ok(None);
+        };
+        let _guard = self.refresh_lock.lock().await;
+        let Some(old) = self.current() else {
+            return Ok(None);
+        };
+        // Another caller refreshed (or signed in again) while we waited.
+        if old != before {
+            return Ok(Some(old.access_token));
+        }
+        let Some(refresh_token) = old.refresh_token.clone() else {
+            return Ok(Some(old.access_token));
+        };
+        self.refresh_locked(&old, &refresh_token).await
+    }
+
+    /// Spends `refresh_token`; the caller holds `refresh_lock`.
+    async fn refresh_locked(
+        &self,
+        old: &Tokens,
+        refresh_token: &str,
+    ) -> Result<Option<String>, AuthError> {
+        match refresh_inner(&self.cfg, refresh_token).await {
             Ok(mut fresh) => {
                 if fresh.id_token.is_none() {
                     fresh.id_token = old.id_token.clone();
                 }
-                Ok(self.replace_if_current(&old, Some(fresh)))
+                Ok(self.replace_if_current(old, Some(fresh)))
             }
             Err(f) if f.oauth_error.as_deref() == Some("invalid_grant") => {
                 log::info!("[auth] refresh token rejected; signing out");
-                Ok(self.replace_if_current(&old, None))
+                Ok(self.replace_if_current(old, None))
             }
             Err(f) => Err(f.err),
         }
@@ -1180,6 +1211,64 @@ mod tests {
         let s = Session::load(cfg(&server.base_url(), 0), store_with(&t));
         assert_eq!(s.access_token().await.unwrap().as_deref(), Some("at-old"));
         mock.assert_calls_async(0).await;
+    }
+
+    #[tokio::test]
+    async fn force_refresh_ignores_expiry() {
+        let server = MockServer::start_async().await;
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/oauth/token")
+                    .form_urlencoded_tuple("grant_type", "refresh_token")
+                    .form_urlencoded_tuple("refresh_token", "rt-old");
+                then.status(200).json_body(json!({
+                    "access_token": "at-new", "expires_in": 3600, "refresh_token": "rt-new"
+                }));
+            })
+            .await;
+        let mut t = near_expiry_tokens();
+        t.expires_at = now() + 3600;
+        let store = store_with(&t);
+        let s = Session::load(cfg(&server.base_url(), 0), store.clone());
+        assert_eq!(s.force_refresh().await.unwrap().as_deref(), Some("at-new"));
+        mock.assert_calls_async(1).await;
+        assert_eq!(
+            stored(&store).unwrap().refresh_token.as_deref(),
+            Some("rt-new")
+        );
+        assert_eq!(s.access_token().await.unwrap().as_deref(), Some("at-new"));
+        assert_eq!(s.account().unwrap().id, "user_1");
+
+        // No refresh token: the current token comes back, no request.
+        let mut bare = t.clone();
+        bare.refresh_token = None;
+        let s2 = Session::load(cfg(&server.base_url(), 0), store_with(&bare));
+        assert_eq!(s2.force_refresh().await.unwrap().as_deref(), Some("at-old"));
+        mock.assert_calls_async(1).await;
+
+        // Signed out stays signed out.
+        let s3 = Session::load(cfg(&server.base_url(), 0), Arc::new(MemKeyStore::new()));
+        assert_eq!(s3.force_refresh().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn force_refresh_invalid_grant_signs_out() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(POST).path("/oauth/token");
+                then.status(400)
+                    .json_body(json!({"error": "invalid_grant"}));
+            })
+            .await;
+        let mut t = near_expiry_tokens();
+        t.expires_at = now() + 3600;
+        let store = store_with(&t);
+        let s = Session::load(cfg(&server.base_url(), 0), store.clone());
+        assert_eq!(s.force_refresh().await.unwrap(), None);
+        assert!(!s.is_signed_in());
+        assert!(stored(&store).is_none());
     }
 
     #[tokio::test]

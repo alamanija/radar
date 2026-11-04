@@ -10,7 +10,7 @@ pub mod queue;
 pub mod resource;
 pub mod resources;
 
-use crate::auth::Session;
+use crate::auth::{AuthError, Session};
 use queue::{DrainReport, Queue, QueuedReq, SleepFn};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ETAG};
 use serde_json::Value;
@@ -95,13 +95,39 @@ type PersistFn = Arc<dyn Fn(&[QueuedReq]) + Send + Sync>;
 
 /// HTTP client for `/sync/*` with the bearer from [`Session`] and the
 /// persistent offline queue underneath mutations.
+///
+/// Enqueueing never waits for a drain: new items land in an inbox (behind a
+/// short-lived std mutex) that is persisted together with the queue right
+/// away, and the running drain merges the inbox into the queue at the start
+/// of each iteration (group-key dedup, newer wins).
 pub struct SyncClient {
     base: String,
     session: Session,
     http: reqwest::Client,
+    /// Held for a whole drain pass; `try_lock` doubles as the JS `draining`
+    /// re-entrancy guard.
     queue: Mutex<Queue>,
+    shared: std::sync::Mutex<Shared>,
     status: watch::Sender<SyncStatus>,
     persist: PersistFn,
+}
+
+/// The persisted picture: the queue as of its last change plus the inbox.
+#[derive(Default)]
+struct Shared {
+    view: Vec<QueuedReq>,
+    inbox: Vec<QueuedReq>,
+}
+
+impl Shared {
+    /// What the queue will hold once the inbox is merged.
+    fn combined(&self) -> Vec<QueuedReq> {
+        let mut all = self.view.clone();
+        for r in &self.inbox {
+            queue::push_dedup(&mut all, r.clone(), 0);
+        }
+        all
+    }
 }
 
 impl SyncClient {
@@ -115,13 +141,16 @@ impl SyncClient {
             session,
             http,
             queue: Mutex::new(Queue::default()),
+            shared: std::sync::Mutex::new(Shared::default()),
             status: watch::channel(SyncStatus::default()).0,
             persist: Arc::new(|_| {}),
         }
     }
 
-    /// Called with the full queue after every queue mutation (the app writes
-    /// it into the store's `sync-queue` key).
+    /// Called with the full queue (including not-yet-merged inbox items)
+    /// after every queue mutation; the app writes it into the store's
+    /// `sync-queue` key. It runs under an internal lock, so it must not call
+    /// back into this client.
     pub fn with_persist(mut self, persist: PersistCallback) -> Self {
         self.persist = Arc::from(persist);
         self
@@ -130,6 +159,10 @@ impl SyncClient {
     /// Restores a persisted queue.
     pub fn with_queue(mut self, items: Vec<QueuedReq>) -> Self {
         let pending = items.len();
+        self.shared
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .view = items.clone();
         self.queue.get_mut().items = items;
         self.status.send_modify(|s| s.pending = pending);
         self
@@ -154,9 +187,10 @@ impl SyncClient {
         self.session.account().map(|a| a.id)
     }
 
-    /// Snapshot of the queued items.
-    pub async fn queued(&self) -> Vec<QueuedReq> {
-        self.queue.lock().await.items.clone()
+    /// Snapshot of the queued items (what is persisted). Never waits for a
+    /// drain.
+    pub fn queued(&self) -> Vec<QueuedReq> {
+        self.shared().combined()
     }
 
     /// Authenticated GET. Any HTTP status comes back as `Ok(Resp)`.
@@ -176,28 +210,61 @@ impl SyncClient {
             Err(e) => return Err(e),
         }
         let accepted = Resp::accepted(&req.body);
-        self.enqueue(req).await;
+        self.enqueue(req);
         Ok(accepted)
     }
 
     /// Drains this account's queued mutations. Items tagged with another
-    /// account are left in place.
+    /// account are left in place. If a drain is already running this returns
+    /// at once with nothing done (`remaining` = items currently queued).
     pub async fn drain(&self) -> DrainReport {
+        let Ok(mut queue) = self.queue.try_lock() else {
+            return DrainReport {
+                remaining: self.queued().len(),
+                ..DrainReport::default()
+            };
+        };
         let account = self.account_id();
-        let mut queue = self.queue.lock().await;
         queue
-            .drain(self, account.as_deref(), |items| (self.persist)(items))
+            .drain(self, account.as_deref(), |items| self.persist_queue(items))
             .await
     }
 
-    async fn enqueue(&self, mut req: QueuedReq) {
+    /// Adds to the inbox and persists immediately; never awaits the drain.
+    fn enqueue(&self, mut req: QueuedReq) {
         req.account_id = self.account_id();
         req.tries = 0;
-        let mut queue = self.queue.lock().await;
-        queue.enqueue(req);
-        (self.persist)(&queue.items);
-        let pending = queue.items.len();
-        self.update_status(|s| s.pending = pending);
+        let mut shared = self.shared();
+        queue::push_dedup(&mut shared.inbox, req, 0);
+        self.persist_locked(&shared);
+    }
+
+    /// Moves the inbox into the persisted view (the caller merges the same
+    /// items, in order, into the queue) and returns it.
+    pub(crate) fn take_inbox(&self) -> Vec<QueuedReq> {
+        let mut shared = self.shared();
+        let incoming = std::mem::take(&mut shared.inbox);
+        for r in &incoming {
+            queue::push_dedup(&mut shared.view, r.clone(), 0);
+        }
+        incoming
+    }
+
+    /// The drain's persist hook: record the queue and persist it with the inbox.
+    fn persist_queue(&self, items: &[QueuedReq]) {
+        let mut shared = self.shared();
+        shared.view = items.to_vec();
+        self.persist_locked(&shared);
+    }
+
+    fn persist_locked(&self, shared: &Shared) {
+        let all = shared.combined();
+        (self.persist)(&all);
+        self.update_status(|s| s.pending = all.len());
+    }
+
+    fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn update_status(&self, f: impl FnOnce(&mut SyncStatus)) {
@@ -205,8 +272,8 @@ impl SyncClient {
     }
 
     /// One authenticated request. The token is fetched per call (Session
-    /// refreshes it when near expiry); a 401 is retried once with a token
-    /// fetched again.
+    /// refreshes it when near expiry); a 401 forces a refresh and retries
+    /// once with the new token.
     pub(crate) async fn send(
         &self,
         method: reqwest::Method,
@@ -214,11 +281,15 @@ impl SyncClient {
         body: &Value,
         headers: &[(String, String)],
     ) -> Result<Resp, SyncError> {
-        let resp = self.send_once(method.clone(), path, body, headers).await?;
+        let token = bearer(self.session.access_token().await)?;
+        let resp = self
+            .send_once(method.clone(), path, body, headers, &token)
+            .await?;
         if resp.status != 401 {
             return Ok(resp);
         }
-        self.send_once(method, path, body, headers).await
+        let fresh = bearer(self.session.force_refresh().await)?;
+        self.send_once(method, path, body, headers, &fresh).await
     }
 
     async fn send_once(
@@ -227,12 +298,8 @@ impl SyncClient {
         path: &str,
         body: &Value,
         headers: &[(String, String)],
+        token: &str,
     ) -> Result<Resp, SyncError> {
-        let token = match self.session.access_token().await {
-            Ok(Some(t)) => t,
-            Ok(None) => return Err(SyncError::NotSignedIn),
-            Err(e) => return Err(SyncError::Network(format!("token refresh: {e}"))),
-        };
         let mut map = HeaderMap::new();
         map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         for (k, v) in headers {
@@ -279,6 +346,14 @@ impl SyncClient {
             }
         };
         Ok(Resp { status, etag, body })
+    }
+}
+
+fn bearer(token: Result<Option<String>, AuthError>) -> Result<String, SyncError> {
+    match token {
+        Ok(Some(t)) => Ok(t),
+        Ok(None) => Err(SyncError::NotSignedIn),
+        Err(e) => Err(SyncError::Network(format!("token refresh: {e}"))),
     }
 }
 

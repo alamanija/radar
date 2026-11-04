@@ -127,6 +127,25 @@ mod header_map {
     }
 }
 
+/// Removes items sharing `req`'s group key, then appends `req`. Returns how
+/// many removed items sat before index `before`.
+pub(crate) fn push_dedup(items: &mut Vec<QueuedReq>, req: QueuedReq, before: usize) -> usize {
+    let mut removed_before = 0;
+    if let Some(key) = &req.group_key {
+        let mut i = 0;
+        items.retain(|it| {
+            let keep = it.group_key.as_ref() != Some(key);
+            if !keep && i < before {
+                removed_before += 1;
+            }
+            i += 1;
+            keep
+        });
+    }
+    items.push(req);
+    removed_before
+}
+
 /// What one drain pass did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DrainReport {
@@ -169,10 +188,15 @@ impl Queue {
     /// Appends `req`, first removing any queued item with the same group key
     /// (the latest full-list PUT supersedes earlier ones).
     pub fn enqueue(&mut self, req: QueuedReq) {
-        if let Some(key) = &req.group_key {
-            self.items.retain(|i| i.group_key.as_ref() != Some(key));
+        push_dedup(&mut self.items, req, 0);
+    }
+
+    /// Merges inbox items in order (newer wins), keeping `cursor` on the
+    /// same item when dedup removes entries before it.
+    fn absorb(&mut self, incoming: Vec<QueuedReq>, cursor: &mut usize) {
+        for req in incoming {
+            *cursor -= push_dedup(&mut self.items, req, *cursor);
         }
-        self.items.push(req);
     }
 
     /// Sends this account's items in order. A retryable status backs off and
@@ -187,9 +211,14 @@ impl Queue {
         persist: impl Fn(&[QueuedReq]),
     ) -> DrainReport {
         let mut report = DrainReport::default();
-        let _inflight = InflightGuard::start(client, self.items.len());
+        let _inflight = InflightGuard::start(client);
         let mut cursor = 0;
-        while cursor < self.items.len() {
+        loop {
+            // Mutations enqueued while we were sending or sleeping.
+            self.absorb(client.take_inbox(), &mut cursor);
+            if cursor >= self.items.len() {
+                break;
+            }
             let item = &self.items[cursor];
             if item
                 .account_id
@@ -206,7 +235,7 @@ impl Queue {
                     item.method
                 );
                 client.update_status(|s| s.last_error = Some(format!("bad method on {path}")));
-                self.remove(cursor, client, &persist);
+                self.remove(cursor, &persist);
                 report.dropped += 1;
                 continue;
             };
@@ -214,6 +243,13 @@ impl Queue {
                 Ok(resp) if is_retryable(resp.status) => {
                     let msg = format!("{} on {path}", resp.status);
                     client.update_status(|s| s.last_error = Some(msg));
+                }
+                Ok(resp) if resp.status == 401 => {
+                    // Still rejected after a forced refresh: keep the write,
+                    // count a try, and stop until auth recovers.
+                    client.update_status(|s| s.last_error = Some(format!("401 on {path}")));
+                    self.bump_try(cursor, &path, client, &persist, &mut report);
+                    break;
                 }
                 Ok(resp) => {
                     if resp.ok() {
@@ -235,7 +271,7 @@ impl Queue {
                         client.update_status(|s| s.last_error = Some(msg));
                         report.dropped += 1;
                     }
-                    self.remove(cursor, client, &persist);
+                    self.remove(cursor, &persist);
                     continue;
                 }
                 Err(SyncError::Decode(_)) => {
@@ -244,7 +280,7 @@ impl Queue {
                         s.last_success_at = Some(now_ms());
                         s.last_error = None;
                     });
-                    self.remove(cursor, client, &persist);
+                    self.remove(cursor, &persist);
                     continue;
                 }
                 Err(SyncError::NotSignedIn) => break,
@@ -256,32 +292,46 @@ impl Queue {
                 }
             }
 
-            let item = &mut self.items[cursor];
-            item.tries += 1;
-            if item.tries > MAX_TRIES {
-                log::error!(
-                    "[sync] giving up on {} {path} after {MAX_TRIES} tries",
-                    item.method
-                );
-                let msg = format!("gave up on {path} after {MAX_TRIES} tries");
-                client.update_status(|s| s.last_error = Some(msg));
-                self.remove(cursor, client, &persist);
-                report.dropped += 1;
-                continue;
+            if let Some(tries) = self.bump_try(cursor, &path, client, &persist, &mut report) {
+                (self.sleep)(backoff(tries)).await;
             }
-            let wait = backoff(item.tries);
-            persist(&self.items);
-            (self.sleep)(wait).await;
         }
-        report.remaining = self.items.len();
+        // Includes inbox items that arrived after an early stop.
+        report.remaining = client.queued().len();
         report
     }
 
-    fn remove(&mut self, at: usize, client: &SyncClient, persist: &impl Fn(&[QueuedReq])) {
+    /// Counts a failed attempt on `items[at]` and persists. Past
+    /// [`MAX_TRIES`] the item is dropped and `None` returned.
+    fn bump_try(
+        &mut self,
+        at: usize,
+        path: &str,
+        client: &SyncClient,
+        persist: &impl Fn(&[QueuedReq]),
+        report: &mut DrainReport,
+    ) -> Option<u32> {
+        let item = &mut self.items[at];
+        item.tries += 1;
+        if item.tries > MAX_TRIES {
+            log::error!(
+                "[sync] giving up on {} {path} after {MAX_TRIES} tries",
+                item.method
+            );
+            let msg = format!("gave up on {path} after {MAX_TRIES} tries");
+            client.update_status(|s| s.last_error = Some(msg));
+            self.remove(at, persist);
+            report.dropped += 1;
+            return None;
+        }
+        let tries = item.tries;
+        persist(&self.items);
+        Some(tries)
+    }
+
+    fn remove(&mut self, at: usize, persist: &impl Fn(&[QueuedReq])) {
         self.items.remove(at);
         persist(&self.items);
-        let pending = self.items.len();
-        client.update_status(|s| s.pending = pending);
     }
 }
 
@@ -290,11 +340,8 @@ impl Queue {
 struct InflightGuard<'a>(&'a SyncClient);
 
 impl<'a> InflightGuard<'a> {
-    fn start(client: &'a SyncClient, pending: usize) -> Self {
-        client.update_status(|s| {
-            s.inflight = true;
-            s.pending = pending;
-        });
+    fn start(client: &'a SyncClient) -> Self {
+        client.update_status(|s| s.inflight = true);
         Self(client)
     }
 }
@@ -312,7 +359,9 @@ mod tests {
     use crate::sync::SyncClient;
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
+    use tokio::sync::Notify;
 
     fn item(path: &str, group: &str, account: Option<&str>) -> QueuedReq {
         let mut r = QueuedReq::new("PUT", path, json!({"x": 1}), Some(group.to_string()));
@@ -362,7 +411,7 @@ mod tests {
         assert_eq!(resp.status, 202);
         assert!(resp.is_accepted());
         assert_eq!(resp.body, body);
-        let q = c.queued().await;
+        let q = c.queued();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].account_id.as_deref(), Some("user_1"));
         assert_eq!(q[0].tries, 0);
@@ -384,7 +433,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status, 202);
-        assert_eq!(c.queued().await.len(), 1);
+        assert_eq!(c.queued().len(), 1);
     }
 
     #[tokio::test]
@@ -402,7 +451,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status, 412);
-        assert!(c.queued().await.is_empty());
+        assert!(c.queued().is_empty());
     }
 
     #[tokio::test]
@@ -417,15 +466,26 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, crate::sync::SyncError::NotSignedIn);
-        assert!(c.queued().await.is_empty());
+        assert!(c.queued().is_empty());
     }
 
     #[tokio::test]
     async fn mutate_401_retries_once_then_returns() {
         let server = MockServer::start_async().await;
-        let put = server
+        let token = refresh_mock(&server).await;
+        let old = server
             .mock_async(|when, then| {
-                when.method(PUT).path("/sync/prefs");
+                when.method(PUT)
+                    .path("/sync/prefs")
+                    .header("authorization", "Bearer at");
+                then.status(401);
+            })
+            .await;
+        let new = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/prefs")
+                    .header("authorization", "Bearer at-new");
                 then.status(401);
             })
             .await;
@@ -434,9 +494,265 @@ mod tests {
             .mutate(QueuedReq::new("PUT", "/sync/prefs", json!({}), None))
             .await
             .unwrap();
-        put.assert_calls_async(2).await;
+        // The retry carries the force-refreshed bearer, not the cached one.
+        token.assert_calls_async(1).await;
+        old.assert_calls_async(1).await;
+        new.assert_calls_async(1).await;
         assert_eq!(resp.status, 401);
-        assert!(c.queued().await.is_empty());
+        assert!(c.queued().is_empty());
+    }
+
+    async fn refresh_mock(server: &MockServer) -> httpmock::Mock<'_> {
+        server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/oauth/token")
+                    .form_urlencoded_tuple("grant_type", "refresh_token")
+                    .form_urlencoded_tuple("refresh_token", "rt-old");
+                then.status(200).json_body(json!({
+                    "access_token": "at-new", "expires_in": 3600, "refresh_token": "rt-new"
+                }));
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn drain_401_after_refresh_keeps_item_and_counts_try() {
+        let server = MockServer::start_async().await;
+        let token = refresh_mock(&server).await;
+        let old = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/a")
+                    .header("authorization", "Bearer at");
+                then.status(401);
+            })
+            .await;
+        let new = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/a")
+                    .header("authorization", "Bearer at-new");
+                then.status(401);
+            })
+            .await;
+        let b = server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/b");
+                then.status(200);
+            })
+            .await;
+        let c = client(&server.base_url()).with_queue(vec![
+            item("/sync/a", "a", Some("user_1")),
+            item("/sync/b", "b", Some("user_1")),
+        ]);
+        let report = c.drain().await;
+        token.assert_calls_async(1).await;
+        old.assert_calls_async(1).await;
+        new.assert_calls_async(1).await;
+        // The pass stops: the next item isn't sent into a broken session.
+        b.assert_calls_async(0).await;
+        assert_eq!(report.dropped, 0);
+        assert_eq!(report.remaining, 2);
+        let q = c.queued();
+        assert_eq!(q[0].path, "/sync/a");
+        assert_eq!(q[0].tries, 1);
+        assert_eq!(q[1].tries, 0);
+        let st = c.status().borrow().clone();
+        assert_eq!(st.last_error.as_deref(), Some("401 on /sync/a"));
+        assert!(!st.inflight);
+    }
+
+    /// A sleep whose first call parks until `release` fires (after signalling
+    /// `entered`); later calls return at once.
+    fn gated_sleep() -> (SleepFn, Arc<Notify>, Arc<Notify>) {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let first = Arc::new(AtomicBool::new(true));
+        let (e, r) = (entered.clone(), release.clone());
+        let f: SleepFn = Arc::new(move |_| {
+            let (e, r, first) = (e.clone(), r.clone(), first.clone());
+            Box::pin(async move {
+                if first.swap(false, Ordering::SeqCst) {
+                    e.notify_one();
+                    r.notified().await;
+                }
+            })
+        });
+        (f, entered, release)
+    }
+
+    #[tokio::test]
+    async fn mutate_does_not_block_during_drain() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/a");
+                then.status(503);
+            })
+            .await;
+        let b = server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/b");
+                then.status(503);
+            })
+            .await;
+        let (sleep, entered, release) = gated_sleep();
+        let persisted = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let p = persisted.clone();
+        let c = Arc::new(
+            client(&server.base_url())
+                .with_sleep(sleep)
+                .with_queue(vec![item("/sync/a", "a", Some("user_1"))])
+                .with_persist(Box::new(move |items| {
+                    p.lock()
+                        .unwrap()
+                        .push(items.iter().map(|i| i.path.clone()).collect())
+                })),
+        );
+        let c2 = c.clone();
+        let drain = tokio::spawn(async move { c2.drain().await });
+        entered.notified().await; // the drain is parked in its backoff sleep
+
+        let resp = tokio::time::timeout(
+            Duration::from_secs(5),
+            c.mutate(QueuedReq::new(
+                "PUT",
+                "/sync/b",
+                json!({"b": 1}),
+                Some("b".into()),
+            )),
+        )
+        .await
+        .expect("mutate must not wait for the drain")
+        .unwrap();
+        assert_eq!(resp.status, 202);
+        // Persisted at once, together with the queue the drain holds.
+        assert_eq!(
+            persisted.lock().unwrap().last().unwrap(),
+            &vec!["/sync/a".to_string(), "/sync/b".to_string()]
+        );
+        assert_eq!(c.queued().len(), 2);
+        assert_eq!(c.status().borrow().pending, 2);
+
+        release.notify_one();
+        let report = drain.await.unwrap();
+        // The running drain picked the inbox item up: 1 direct send + 9 drained.
+        b.assert_calls_async(10).await;
+        assert_eq!(report.dropped, 2);
+        assert!(c.queued().is_empty());
+        assert_eq!(c.status().borrow().pending, 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_drain_returns_early() {
+        let server = MockServer::start_async().await;
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/a");
+                then.status(503);
+            })
+            .await;
+        let (sleep, entered, release) = gated_sleep();
+        let c = Arc::new(
+            client(&server.base_url())
+                .with_sleep(sleep)
+                .with_queue(vec![item("/sync/a", "a", Some("user_1"))]),
+        );
+        let c2 = c.clone();
+        let first = tokio::spawn(async move { c2.drain().await });
+        entered.notified().await;
+
+        let second = tokio::time::timeout(Duration::from_secs(5), c.drain())
+            .await
+            .expect("second drain must not wait");
+        assert!(second.succeeded.is_empty());
+        assert_eq!(second.dropped, 0);
+        assert_eq!(second.remaining, 1);
+        put.assert_calls_async(1).await;
+
+        release.notify_one();
+        let report = first.await.unwrap();
+        put.assert_calls_async(9).await;
+        assert_eq!(report.dropped, 1);
+    }
+
+    #[tokio::test]
+    async fn inbox_dedups_against_queue_newer_wins() {
+        let server = MockServer::start_async().await;
+        let down = server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/prefs");
+                then.status(503);
+            })
+            .await;
+        let persisted = Arc::new(Mutex::new(Vec::<Vec<Value>>::new()));
+        let p = persisted.clone();
+        let mut old = item("/sync/prefs", "PUT:/sync/prefs", Some("user_1"));
+        old.body = json!({"v": "old"});
+        let c = client(&server.base_url())
+            .with_queue(vec![old])
+            .with_persist(Box::new(move |items| {
+                p.lock()
+                    .unwrap()
+                    .push(items.iter().map(|i| i.body.clone()).collect())
+            }));
+        let resp = c
+            .mutate(QueuedReq::new(
+                "PUT",
+                "/sync/prefs",
+                json!({"v": "new"}),
+                Some("PUT:/sync/prefs".into()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 202);
+        let q = c.queued();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].body, json!({"v": "new"}));
+        assert_eq!(
+            persisted.lock().unwrap().last().unwrap(),
+            &vec![json!({"v": "new"})]
+        );
+
+        down.delete_async().await;
+        let new = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/prefs")
+                    .json_body(json!({"v": "new"}));
+                then.status(200).json_body(json!({"updatedAt": "t"}));
+            })
+            .await;
+        let stale = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/prefs")
+                    .json_body(json!({"v": "old"}));
+                then.status(200);
+            })
+            .await;
+        let report = c.drain().await;
+        new.assert_calls_async(1).await;
+        stale.assert_calls_async(0).await;
+        assert_eq!(
+            report.succeeded,
+            vec![("PUT:/sync/prefs".to_string(), json!({"updatedAt": "t"}))]
+        );
+        assert!(c.queued().is_empty());
+    }
+
+    #[test]
+    fn absorb_keeps_cursor_on_current_item() {
+        let mut q = Queue::new(vec![
+            item("/sync/x", "g1", Some("user_2")),
+            item("/sync/y", "g2", Some("user_1")),
+        ]);
+        let mut cursor = 1;
+        q.absorb(vec![item("/sync/x2", "g1", Some("user_2"))], &mut cursor);
+        assert_eq!(cursor, 0);
+        assert_eq!(q.items[cursor].path, "/sync/y");
+        assert_eq!(q.items[1].path, "/sync/x2");
     }
 
     #[test]
@@ -501,7 +817,7 @@ mod tests {
             report.succeeded[0],
             ("g-mine".to_string(), json!({"updatedAt": "t1"}))
         );
-        let left = c.queued().await;
+        let left = c.queued();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].account_id.as_deref(), Some("user_2"));
         let st = c.status().borrow().clone();
@@ -537,7 +853,7 @@ mod tests {
         assert_eq!(report.dropped, 2);
         assert_eq!(report.remaining, 0);
         assert!(report.succeeded.is_empty());
-        assert!(c.queued().await.is_empty());
+        assert!(c.queued().is_empty());
         assert_eq!(*persisted.lock().unwrap(), vec![1, 0]);
         let st = c.status().borrow().clone();
         assert_eq!(st.last_error.as_deref(), Some("400 on /sync/bad"));
@@ -618,7 +934,7 @@ mod tests {
         assert_eq!(report.remaining, 2);
         assert_eq!(report.dropped, 0);
         assert!(slept.lock().unwrap().is_empty());
-        assert!(c.queued().await.iter().all(|i| i.tries == 0));
+        assert!(c.queued().iter().all(|i| i.tries == 0));
         assert!(!c.status().borrow().inflight);
     }
 

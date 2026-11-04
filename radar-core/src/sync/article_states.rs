@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(patch(&c, "7", st).await.unwrap().status, 202);
         assert_eq!(patch(&c, "7", st).await.unwrap().status, 202);
         assert_eq!(patch(&c, "8", st).await.unwrap().status, 202);
-        let q = c.queued().await;
+        let q = c.queued();
         assert_eq!(q.len(), 2);
         assert_eq!(
             q[0].group_key.as_deref(),

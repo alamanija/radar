@@ -276,6 +276,11 @@ impl SyncResource for ArchivesRes {
         to_key(xs)
     }
 
+    /// Offline briefings join the server's archives rather than replace them.
+    fn merge_offline(r: &Value, local: &Vec<Archive>) -> Vec<Archive> {
+        Self::from_remote(r, local)
+    }
+
     fn is_empty(xs: &Vec<Archive>) -> bool {
         xs.is_empty()
     }
