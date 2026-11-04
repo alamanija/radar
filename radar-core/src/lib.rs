@@ -10,6 +10,7 @@ pub mod schedule_wake;
 pub mod search;
 pub mod store;
 pub mod summarize;
+pub mod sync;
 pub mod text;
 pub mod types;
 
