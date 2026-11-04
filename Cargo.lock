@@ -1682,6 +1682,7 @@ dependencies = [
  "dotenvy",
  "jsonwebtoken",
  "reqwest",
+ "rsa",
  "serde",
  "serde_json",
  "sqlx",
