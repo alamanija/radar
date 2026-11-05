@@ -743,6 +743,70 @@ mod tests {
         );
     }
 
+    /// Review Focus 2, the other half: the main window is open (and
+    /// focused) when the run starts and the user closes it before the
+    /// runner answers. The result still lands, persists and notifies, and
+    /// a reopened window shows it.
+    #[gpui_kit::test]
+    fn briefing_completes_after_its_window_closes(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = Fakes::default();
+        cx.update(gpui_kit::init);
+        let model = faked_model(cx, &dir, &fakes, Vec::new(), at(9, 0));
+        cx.update(crate::workspace::init);
+        // The runner answers only once the test releases it.
+        let (release, gate) = async_channel::bounded::<()>(1);
+        let resp = BriefingResponse {
+            articles: two_articles(),
+            errors: Vec::new(),
+            fetched_at: chrono::Utc::now(),
+        };
+        model.update(cx, |m, _| {
+            m.hooks.briefing = Arc::new(move |_, _, _| {
+                let (gate, resp) = (gate.clone(), resp.clone());
+                Box::pin(async move {
+                    let _ = gate.recv().await;
+                    Ok(resp)
+                })
+            })
+        });
+        cx.update(crate::open_main_window);
+        let window = cx.windows()[0];
+        cx.update_window(window, |_, w, _| w.activate_window())
+            .unwrap();
+        cx.run_until_parked();
+
+        model.update(cx, |m, cx| m.run_briefing(cx));
+        assert!(model.read_with(cx, |m, _| m.model.scanning));
+        // The user closes it: the app's should-close handler runs, then the
+        // platform removes the window.
+        assert!(gpui_kit::VisualTestContext::from_window(window, cx).simulate_close());
+        cx.update_window(window, |_, w, _| w.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
+
+        release.try_send(()).unwrap();
+        wait_until(cx, |cx| !model.read_with(cx, |m, _| m.model.scanning));
+        assert_eq!(model.read_with(cx, |m, _| m.model.articles.len()), 2);
+        cx.executor().advance_clock(SAVE_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(
+            store::load(&dir.path().join("radar.json")).articles.len(),
+            2
+        );
+        assert_eq!(fakes.notified.borrow().len(), 1, "no window has focus now");
+
+        cx.update(crate::open_main_window);
+        let reopened = cx.windows()[0];
+        cx.update_window(reopened, |_, w, cx| {
+            w.render_frame(cx);
+            assert!(w.try_find("card-1").is_some() && w.try_find("card-2").is_some());
+        })
+        .unwrap();
+    }
+
     #[gpui_kit::test]
     fn run_briefing_ignored_while_scanning(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();

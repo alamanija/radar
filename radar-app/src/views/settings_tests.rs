@@ -20,8 +20,9 @@ use radar_core::store;
 use radar_core::sync::SyncStatus;
 use radar_core::types::View;
 use serde_json::json;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 fn settings(cx: &mut TestAppContext) -> Shell {
     let s = boot(cx);
@@ -304,6 +305,62 @@ fn schedule_toggle_updates_prefs(cx: &mut TestAppContext) {
     click(&s, cx, "settings-autostart");
     wait_until(cx, |cx| !autostart(&s, cx));
     assert!(!registered.load(SeqCst), "the backend was switched off");
+}
+
+/// The OS answers slowly (each `is_enabled` waits for the test). A click
+/// while a read or a set is in flight is ignored: during the first read
+/// the form's "off" is only a placeholder, and a double click must not
+/// register twice.
+#[gpui_kit::test]
+fn autostart_toggle_ignores_clicks_while_the_os_answers(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    let (answer, answers) = mpsc::channel::<()>();
+    let answers = Mutex::new(answers);
+    let sets = Arc::new(AtomicUsize::new(0));
+    let registered = Arc::new(AtomicBool::new(false));
+    s.model.update(cx, |m, _| {
+        let (read, write, count) = (registered.clone(), registered.clone(), sets.clone());
+        m.hooks.autostart = autostart::Backend {
+            is_enabled: Arc::new(move || {
+                let _ = answers.lock().unwrap().recv_timeout(Duration::from_secs(5));
+                read.load(SeqCst)
+            }),
+            set: Arc::new(move |on| {
+                count.fetch_add(1, SeqCst);
+                write.store(on, SeqCst);
+                Ok(())
+            }),
+        };
+    });
+    let pending = |s: &Shell, cx: &mut TestAppContext| {
+        s.ws.read_with(cx, |w, _| {
+            w.settings.form.as_ref().unwrap().autostart_pending
+        })
+    };
+    s.edit(cx, |m| m.prefs.view = View::Settings);
+    s.label(cx, "content-title");
+    assert!(pending(&s, cx), "the first read is out");
+
+    click(&s, cx, "settings-autostart");
+    click(&s, cx, "settings-autostart");
+    settle(cx);
+    assert_eq!(
+        sets.load(SeqCst),
+        0,
+        "clicks during the first read are ignored"
+    );
+    answer.send(()).unwrap();
+    wait_until(cx, |cx| !pending(&s, cx));
+
+    click(&s, cx, "settings-autostart");
+    click(&s, cx, "settings-autostart");
+    settle(cx);
+    answer.send(()).unwrap();
+    wait_until(cx, |cx| !pending(&s, cx));
+    assert_eq!(sets.load(SeqCst), 1, "a double click sets once");
+    assert!(s
+        .ws
+        .read_with(cx, |w, _| w.settings.form.as_ref().unwrap().autostart));
 }
 
 #[gpui_kit::test]

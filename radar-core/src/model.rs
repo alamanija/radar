@@ -341,6 +341,13 @@ impl RadarModel {
         self.scanning = false;
     }
 
+    /// Some source a briefing would fetch: enabled, with a feed URL.
+    /// Run-at-launch and the scheduler only start a briefing when there is
+    /// one.
+    pub fn has_usable_source(&self) -> bool {
+        self.sources.iter().any(is_fetched)
+    }
+
     pub fn briefing_inputs(
         &self,
     ) -> (
@@ -349,11 +356,7 @@ impl RadarModel {
         Option<String>,
         HashSet<u32>,
     ) {
-        let enabled: Vec<&Source> = self
-            .sources
-            .iter()
-            .filter(|s| s.enabled && s.feed_url.as_deref().is_some_and(|u| !u.is_empty()))
-            .collect();
+        let enabled: Vec<&Source> = self.sources.iter().filter(|s| is_fetched(s)).collect();
         let sources = enabled
             .iter()
             .map(|s| SourceInput {
@@ -415,6 +418,11 @@ impl RadarModel {
         }
         acc.email.split('@').next().unwrap_or("").to_string()
     }
+}
+
+/// Enabled, with a feed URL: a source a briefing fetches.
+fn is_fetched(s: &Source) -> bool {
+    s.enabled && s.feed_url.as_deref().is_some_and(|u| !u.is_empty())
 }
 
 #[cfg(test)]
@@ -662,6 +670,21 @@ mod tests {
         assert_eq!(si.len(), 1);
         assert_eq!(lens, None);
         assert_eq!(att, HashSet::from([1]));
+    }
+
+    #[test]
+    fn has_usable_source_needs_an_enabled_feed() {
+        let mut m = RadarModel::default();
+        assert!(!m.has_usable_source());
+        m.sources = vec![src(1, "a", false)];
+        assert!(m.has_usable_source());
+        m.sources[0].enabled = false;
+        assert!(!m.has_usable_source(), "disabled");
+        m.sources[0].enabled = true;
+        m.sources[0].feed_url = Some(String::new());
+        assert!(!m.has_usable_source(), "empty feed URL");
+        m.sources[0].feed_url = None;
+        assert!(!m.has_usable_source(), "no feed URL");
     }
 
     #[test]

@@ -74,6 +74,10 @@ pub struct Form {
     /// Login-item state as the OS last reported it (`AutostartToggle`);
     /// off until the first read lands.
     pub autostart: bool,
+    /// A read or a set of the login item is in flight; the toggle ignores
+    /// clicks until it lands (the first read's "off" is only a
+    /// placeholder, and a double click must not register twice).
+    pub autostart_pending: bool,
     /// The model values the controlled fields last agreed on.
     synced: Synced,
     _subscriptions: Vec<Subscription>,
@@ -183,6 +187,7 @@ impl Form {
             lens: None,
             api: ApiKey::default(),
             autostart: false,
+            autostart_pending: false,
             synced,
             _subscriptions: subscriptions,
         }
@@ -361,7 +366,7 @@ impl SettingsView {
     }
 
     fn toggle_autostart(&mut self, cx: &mut Context<Workspace>) {
-        if let Some(f) = self.form() {
+        if let Some(f) = self.form().filter(|f| !f.autostart_pending) {
             let want = !f.autostart;
             self.refresh_autostart(Some(want), cx);
         }
@@ -371,6 +376,9 @@ impl SettingsView {
     /// shows what the OS reports. The OS owns the state, so the toggle never
     /// flips a local copy. The I/O runs on the blocking pool.
     fn refresh_autostart(&mut self, want: Option<bool>, cx: &mut Context<Workspace>) {
+        if let Some(f) = self.form() {
+            f.autostart_pending = true;
+        }
         let backend = AppModel::global(cx).read(cx).hooks.autostart.clone();
         cx.spawn(async move |ws, cx| {
             let enabled = bridge::on_blocking(move || {
@@ -385,6 +393,7 @@ impl SettingsView {
             let _ = ws.update(cx, |ws, cx| {
                 if let Some(f) = ws.settings.form() {
                     f.autostart = enabled;
+                    f.autostart_pending = false;
                 }
                 cx.notify();
             });

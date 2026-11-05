@@ -190,12 +190,24 @@ mod windows {
     /// sticking to dotted LABEL for consistency with the other platforms.
     const TASK_NAME: &str = LABEL;
 
+    /// `CREATE_NO_WINDOW`: Radar is a GUI-subsystem app, so a console child
+    /// like `schtasks` would otherwise flash a console window, and the wake
+    /// sync runs on every launch.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    fn schtasks() -> Command {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new("schtasks");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    }
+
     pub fn sync(enabled: bool, hour: Option<u32>, minute: Option<u32>) -> Result<(), String> {
         if !enabled {
             // Idempotent: /Delete returns non-zero if the task doesn't exist.
             // Ignore — the post-condition "task is gone" is satisfied either
             // way.
-            let _ = Command::new("schtasks")
+            let _ = schtasks()
                 .args(["/Delete", "/TN", TASK_NAME, "/F"])
                 .status();
             return Ok(());
@@ -211,7 +223,7 @@ mod windows {
 
         // /F on /Create overwrites an existing task with the same name,
         // making this a single-shot idempotent upsert.
-        let status = Command::new("schtasks")
+        let status = schtasks()
             .args([
                 "/Create", "/SC", "DAILY", "/TN", TASK_NAME, "/TR", &task_run, "/ST", &time, "/F",
             ])

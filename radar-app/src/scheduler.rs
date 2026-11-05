@@ -11,7 +11,6 @@ use crate::app_model::AppModel;
 use crate::bridge;
 use chrono::{DateTime, Local, TimeZone as _};
 use gpui_kit::{App, AppContext as _, Context, Task};
-use radar_core::model::RadarModel;
 use radar_core::schedule;
 use radar_core::types::Prefs;
 use std::sync::Arc;
@@ -100,7 +99,7 @@ fn tick(m: &mut AppModel, cx: &mut Context<AppModel>) {
     let last_run = archived.max(m.schedule.fired_at);
     if m.model.scanning
         || !schedule::should_fire(&m.model.prefs, last_run, now)
-        || !has_usable_source(&m.model)
+        || !m.model.has_usable_source()
     {
         return;
     }
@@ -121,19 +120,11 @@ pub fn run_at_launch(cx: &mut App) {
             return;
         }
         m.schedule.launch_decided = true;
-        if m.model.prefs.run_at_launch && has_usable_source(&m.model) {
+        if m.model.prefs.run_at_launch && m.model.has_usable_source() {
             log::info!("[briefing] run at launch");
             m.run_briefing(cx);
         }
     });
-}
-
-/// An enabled source with a feed URL: one a briefing fetches (the filter
-/// of `RadarModel::briefing_inputs`).
-fn has_usable_source(m: &RadarModel) -> bool {
-    m.sources
-        .iter()
-        .any(|s| s.enabled && s.feed_url.as_deref().is_some_and(|u| !u.is_empty()))
 }
 
 #[cfg(test)]
@@ -141,8 +132,9 @@ mod tests {
     use super::*;
     use crate::test_support::{at, faked_model, settle, wait_until, Fakes};
     use crate::workspace::shell_tests::article;
+    use chrono::Utc;
     use gpui_kit::{Entity, TestAppContext};
-    use radar_core::types::Theme;
+    use radar_core::types::{Archive, Theme};
 
     fn idle(model: &Entity<AppModel>, cx: &mut TestAppContext) {
         wait_until(cx, |cx| !model.read_with(cx, |m, _| m.model.scanning));
@@ -181,6 +173,36 @@ mod tests {
 
         tick_after(cx, TICK);
         assert_eq!(fakes.runs(), 1, "the run is after the slot: not again");
+    }
+
+    /// A run at or after the slot happened before the loop started (a
+    /// manual run, or a relaunch after the slot fired). The archive alone
+    /// keeps the loop from firing again.
+    #[gpui_kit::test]
+    fn scheduler_skips_a_slot_the_archive_already_covers(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = Fakes::default();
+        let one = vec![article(1, "tools", false)];
+        let model = faked_model(cx, &dir, &fakes, one.clone(), at(9, 0));
+        model.update(cx, |m, cx| {
+            m.update_model(cx, |r| {
+                r.archives.insert(
+                    0,
+                    Archive {
+                        id: 1,
+                        run_at: at(8, 0).with_timezone(&Utc).to_rfc3339(),
+                        articles: one,
+                        errors: Vec::new(),
+                    },
+                )
+            })
+        });
+        schedule_at(&model, cx, "07:30");
+        cx.update(spawn);
+
+        tick_after(cx, WARMUP);
+        tick_after(cx, TICK);
+        assert_eq!(fakes.runs(), 0, "08:00 already covers the 07:30 slot");
     }
 
     /// Every feed failed: nothing is archived, so `last_run_at` stays before
