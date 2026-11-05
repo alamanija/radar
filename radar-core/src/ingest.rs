@@ -641,7 +641,14 @@ mod tests {
         let mut m = RadarModel::from_snapshot(snap);
         m.begin_briefing();
         let out = m.finish_briefing(resp.clone(), &HashSet::from([1]), 1_767_300_000_000);
-        assert_eq!(out.new_count, 0, "the stored briefing had these ids");
+        // The stored archive run has the oat-milk article under the id the
+        // new briefing derives, so only carton-lab (never archived) is new.
+        assert_eq!(out.new_count, 1, "only the article the stored run lacks");
+        let oat = by_url(&m.articles, "/oat-milk-cartons");
+        assert!(
+            !m.new_ids().contains(&oat.id),
+            "the stored run's id matches"
+        );
         let saved: Vec<&str> = m.saved().iter().map(|a| a.url.as_str()).collect();
         assert_eq!(saved, ["https://thedieline.com/oat-milk-cartons"]);
         assert!(by_url(&m.articles, "/carton-lab").read);

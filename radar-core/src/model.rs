@@ -54,8 +54,6 @@ pub struct RadarModel {
     pub active_category: String,
     /// Keyed by `article.id.to_string()`.
     pub article_states: HashMap<String, ArticleState>,
-    /// Article ids present when the current briefing began (for `new_count`).
-    prev_ids: Option<HashSet<u64>>,
 }
 
 fn slugify_base(label: &str) -> String {
@@ -316,7 +314,6 @@ impl RadarModel {
     // ---- briefing ----
 
     pub fn begin_briefing(&mut self) {
-        self.prev_ids = Some(self.articles.iter().map(|a| a.id).collect());
         self.scanning = true;
         self.articles.clear();
         self.briefing_errors.clear();
@@ -328,15 +325,6 @@ impl RadarModel {
         attempted: &HashSet<u32>,
         now_ms: i64,
     ) -> BriefingOutcome {
-        let prev = self
-            .prev_ids
-            .take()
-            .unwrap_or_else(|| self.articles.iter().map(|a| a.id).collect());
-        let new_count = resp
-            .articles
-            .iter()
-            .filter(|a| !prev.contains(&a.id))
-            .count();
         let total = resp.articles.len();
         let source_count = resp
             .articles
@@ -384,10 +372,39 @@ impl RadarModel {
         self.apply_article_states();
         self.scanning = false;
         BriefingOutcome {
-            new_count,
+            new_count: self.new_ids().len(),
             total,
             source_count,
         }
+    }
+
+    /// Live articles that appear in no earlier briefing run. The live run
+    /// is the newest archive entry with exactly the live article ids
+    /// (another device's later run may sit above it); earlier runs are the
+    /// entries older than it. Without such an entry, every entry but the
+    /// newest counts as earlier.
+    pub fn new_ids(&self) -> HashSet<u64> {
+        let live: HashSet<u64> = self.articles.iter().map(|a| a.id).collect();
+        if live.is_empty() {
+            return live;
+        }
+        let ids = |a: &Archive| a.articles.iter().map(|x| x.id).collect::<HashSet<_>>();
+        let at = |a: &Archive| DateTime::parse_from_rfc3339(&a.run_at).ok();
+        let earlier: Vec<&Archive> = match self.archives.iter().find(|a| ids(a) == live) {
+            Some(run) => {
+                let run_at = at(run);
+                self.archives
+                    .iter()
+                    .filter(|a| !std::ptr::eq(*a, run) && at(a) < run_at)
+                    .collect()
+            }
+            None => self.archives.iter().skip(1).collect(),
+        };
+        let seen: HashSet<u64> = earlier
+            .iter()
+            .flat_map(|a| a.articles.iter().map(|x| x.id))
+            .collect();
+        live.difference(&seen).copied().collect()
     }
 
     pub fn fail_briefing(&mut self, msg: &str) {
@@ -396,7 +413,6 @@ impl RadarModel {
             source_name: "radar".into(),
             message: msg.to_string(),
         }];
-        self.prev_ids = None;
         self.scanning = false;
     }
 
@@ -654,9 +670,10 @@ mod tests {
     }
 
     #[test]
-    fn new_count_uses_articles_before_begin() {
+    fn new_count_ignores_articles_from_earlier_runs() {
         let mut m = model();
         m.articles = vec![art(1, 1)];
+        m.archives = vec![run(1, "1970-01-01T00:00:00.005Z", &[1])];
         m.begin_briefing();
         assert!(m.articles.is_empty());
         let out = m.finish_briefing(
@@ -911,5 +928,63 @@ mod tests {
         assert_eq!(d.published, "recent");
         assert_eq!(d.category_label, "C");
         assert_eq!(d.accent, "ink");
+    }
+
+    fn run(id: i64, run_at: &str, ids: &[u64]) -> Archive {
+        Archive {
+            id,
+            run_at: run_at.into(),
+            articles: ids.iter().map(|&i| art(i, 1)).collect(),
+            errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn new_ids_exclude_articles_seen_in_earlier_runs() {
+        let mut m = model();
+        m.articles = vec![art(1, 1), art(2, 1), art(3, 1)];
+        m.archives = vec![
+            run(2, "2026-11-05T07:30:00.000Z", &[1, 2, 3]),
+            run(1, "2026-11-04T07:30:00.000Z", &[2]),
+        ];
+        assert_eq!(m.new_ids(), HashSet::from([1, 3]));
+    }
+
+    #[test]
+    fn a_later_run_from_another_device_does_not_hide_new_articles() {
+        let mut m = model();
+        m.articles = vec![art(1, 1), art(2, 1), art(3, 1)];
+        m.archives = vec![
+            run(3, "2026-11-05T12:00:00.000Z", &[9]),
+            run(2, "2026-11-05T07:30:00.000Z", &[1, 2, 3]),
+            run(1, "2026-11-04T07:30:00.000Z", &[2]),
+        ];
+        assert_eq!(m.new_ids(), HashSet::from([1, 3]));
+    }
+
+    #[test]
+    fn without_a_matching_run_all_but_the_newest_count_as_earlier() {
+        let mut m = model();
+        m.articles = vec![art(1, 1), art(2, 1)];
+        m.archives = vec![
+            run(2, "2026-11-05T07:30:00.000Z", &[5]),
+            run(1, "2026-11-04T07:30:00.000Z", &[1]),
+        ];
+        assert_eq!(m.new_ids(), HashSet::from([2]));
+        assert!(model().new_ids().is_empty(), "no articles, nothing new");
+    }
+
+    #[test]
+    fn finish_briefing_counts_new_from_the_run_history() {
+        let mut m = model();
+        m.archives = vec![run(1, "2026-11-04T07:30:00.000Z", &[1])];
+        m.begin_briefing();
+        let out = m.finish_briefing(
+            resp(vec![art(1, 1), art(2, 1)], vec![]),
+            &HashSet::from([1]),
+            1_794_300_000_000,
+        );
+        assert_eq!(out.new_count, 1);
+        assert_eq!(m.new_ids(), HashSet::from([2]));
     }
 }
