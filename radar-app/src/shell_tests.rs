@@ -10,15 +10,18 @@ use radar_core::types::{Accent, Account, Article, Category, Density, Theme, View
 use std::path::PathBuf;
 use std::time::Duration;
 
-struct Shell {
+pub(crate) struct Shell {
     _dir: tempfile::TempDir,
-    path: PathBuf,
-    window: AnyWindowHandle,
-    ws: Entity<Workspace>,
-    model: Entity<AppModel>,
+    pub(crate) path: PathBuf,
+    pub(crate) window: AnyWindowHandle,
+    pub(crate) ws: Entity<Workspace>,
+    pub(crate) model: Entity<AppModel>,
 }
 
-fn boot(cx: &mut TestAppContext) -> Shell {
+pub(crate) fn boot(cx: &mut TestAppContext) -> Shell {
+    // Work on the tokio runtime (briefing, sync PATCH) wakes GPUI tasks from
+    // its own threads; without this the scheduler flags that as a race.
+    cx.executor().allow_parking();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("radar.json");
     let (window, ws, model) = cx.update(|cx| {
@@ -42,13 +45,13 @@ fn boot(cx: &mut TestAppContext) -> Shell {
 }
 
 impl Shell {
-    fn click(&self, cx: &mut TestAppContext, id: &'static str) {
+    pub(crate) fn click(&self, cx: &mut TestAppContext, id: &'static str) {
         cx.update_window(self.window, |_, window, cx| window.click(id, cx))
             .unwrap();
         cx.run_until_parked();
     }
 
-    fn click_dyn(&self, cx: &mut TestAppContext, id: String) {
+    pub(crate) fn click_dyn(&self, cx: &mut TestAppContext, id: String) {
         cx.update_window(self.window, |_, window, cx| {
             window.click(gpui_kit::SharedString::from(id), cx)
         })
@@ -57,7 +60,11 @@ impl Shell {
     }
 
     /// Accessible label of an element in a freshly rendered frame.
-    fn label(&self, cx: &mut TestAppContext, id: &'static str) -> Option<String> {
+    pub(crate) fn label(
+        &self,
+        cx: &mut TestAppContext,
+        id: impl Into<gpui_kit::ElementId>,
+    ) -> Option<String> {
         cx.update_window(self.window, |_, window, cx| {
             window.render_frame(cx);
             window.find(id).label().map(str::to_owned)
@@ -65,7 +72,11 @@ impl Shell {
         .unwrap()
     }
 
-    fn exists(&self, cx: &mut TestAppContext, id: &'static str) -> bool {
+    pub(crate) fn exists(
+        &self,
+        cx: &mut TestAppContext,
+        id: impl Into<gpui_kit::ElementId>,
+    ) -> bool {
         cx.update_window(self.window, |_, window, cx| {
             window.render_frame(cx);
             window.try_find(id).is_some()
@@ -73,17 +84,21 @@ impl Shell {
         .unwrap()
     }
 
-    fn edit(&self, cx: &mut TestAppContext, f: impl FnOnce(&mut radar_core::model::RadarModel)) {
+    pub(crate) fn edit(
+        &self,
+        cx: &mut TestAppContext,
+        f: impl FnOnce(&mut radar_core::model::RadarModel),
+    ) {
         self.model.update(cx, |m, cx| m.update_model(cx, f));
         cx.run_until_parked();
     }
 
-    fn read<R>(&self, cx: &mut TestAppContext, f: impl FnOnce(&AppModel) -> R) -> R {
+    pub(crate) fn read<R>(&self, cx: &mut TestAppContext, f: impl FnOnce(&AppModel) -> R) -> R {
         self.model.read_with(cx, |m, _| f(m))
     }
 }
 
-fn article(id: u64, category: &str, read: bool) -> Article {
+pub(crate) fn article(id: u64, category: &str, read: bool) -> Article {
     Article {
         id,
         title: format!("Article {id}"),
@@ -102,7 +117,7 @@ fn article(id: u64, category: &str, read: bool) -> Article {
     }
 }
 
-fn category(id: &str) -> Category {
+pub(crate) fn category(id: &str) -> Category {
     Category {
         id: id.into(),
         label: id.to_uppercase(),
@@ -388,11 +403,16 @@ fn content_routes_on_view(cx: &mut TestAppContext) {
         (View::Sources, "Sources"),
         (View::Categories, "Categories"),
         (View::Settings, "Settings"),
-        (View::Briefing, "Morning Briefing"),
     ] {
         s.edit(cx, |m| m.prefs.view = view);
         assert_eq!(s.label(cx, "content-title").as_deref(), Some(title));
     }
+    // The briefing page titles itself with the greeting, not the header's
+    // "Morning Briefing".
+    s.edit(cx, |m| m.prefs.view = View::Briefing);
+    let greeting = s.label(cx, "content-title").unwrap();
+    assert!(greeting.ends_with('.'), "{greeting}");
+    assert!(s.exists(cx, "briefing-subtitle"));
 }
 
 #[gpui_kit::test]

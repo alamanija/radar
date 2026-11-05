@@ -16,9 +16,9 @@ use crate::{bridge, theme};
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use radar_core::auth::Session;
 use radar_core::ingest;
-use radar_core::model::RadarModel;
+use radar_core::model::{ArticleState, RadarModel};
 use radar_core::store;
-use radar_core::sync::{SyncClient, SyncStatus};
+use radar_core::sync::{article_states, SyncClient, SyncStatus};
 use radar_core::types::Account;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -39,12 +39,16 @@ pub struct AppModel {
     pub session: Option<Session>,
     pub account: Option<Account>,
     /// Wired in Task 12. `Arc` so async work can hold it past a borrow.
-    #[allow(dead_code)]
     pub sync: Option<Arc<SyncClient>>,
     #[allow(dead_code)]
     pub sync_status: SyncStatus,
     /// True once hydration finished; saves are skipped before that.
     pub ready: bool,
+    /// True once all five synced resources (profile, categories, sources,
+    /// archives, prefs) have resolved their sign-in pull. Task 12 sets it
+    /// when sync is wired; until then it stays false, so a signed-in
+    /// session is never `hydrated()`.
+    pub resources_pulled: bool,
     pub store_path: PathBuf,
     /// Persisted offline sync queue (opaque JS shape). Passed through
     /// unchanged until sync is wired (Task 12).
@@ -78,6 +82,7 @@ impl AppModel {
             sync: None,
             sync_status: SyncStatus::default(),
             ready: true,
+            resources_pulled: false,
             store_path,
             sync_queue,
             save_task: None,
@@ -212,6 +217,51 @@ impl AppModel {
                     }
                 })
             });
+        })
+        .detach();
+    }
+
+    /// Fully hydrated: local disk loaded and, when signed in, every synced
+    /// resource pulled (`hydrated` in `App.jsx`). Gates first-run UI so the
+    /// tutorial doesn't flash between local load and the server data.
+    pub fn hydrated(&self) -> bool {
+        self.ready && (self.account.is_none() || self.resources_pulled)
+    }
+
+    /// Flips the read flag of an article and PATCHes it when signed in.
+    pub fn toggle_read(&mut self, cx: &mut Context<Self>, id: u64) {
+        let out = self.update_model(cx, |m| m.toggle_read(id));
+        self.patch_article_state(cx, out);
+    }
+
+    /// Flips the bookmark flag of an article and PATCHes it when signed in.
+    pub fn toggle_bookmark(&mut self, cx: &mut Context<Self>, id: u64) {
+        let out = self.update_model(cx, |m| m.toggle_bookmark(id));
+        self.patch_article_state(cx, out);
+    }
+
+    /// Marks an unread article read (opening it in the browser); a read
+    /// article is left alone.
+    pub fn mark_read(&mut self, cx: &mut Context<Self>, id: u64) {
+        let unread = self.model.articles.iter().any(|a| a.id == id && !a.read);
+        if unread {
+            self.toggle_read(cx, id);
+        }
+    }
+
+    /// One toggle, one PATCH. The request runs on the tokio runtime (never
+    /// the UI thread); `SyncClient::mutate` queues it on a transient
+    /// failure. Without a sync client (signed out) nothing leaves the app.
+    fn patch_article_state(&self, cx: &mut Context<Self>, out: Option<(String, ArticleState)>) {
+        let (Some(client), Some((id, state))) = (self.sync.clone(), out) else {
+            return;
+        };
+        cx.spawn(async move |_, _| {
+            let res =
+                bridge::on_rt(async move { article_states::patch(&client, &id, state).await });
+            if let Err(e) = res.await {
+                log::warn!("[sync] article state patch failed: {e}");
+            }
         })
         .detach();
     }

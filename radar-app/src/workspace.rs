@@ -17,12 +17,13 @@ use crate::app_model::AppModel;
 use crate::components::icon::{Icon, IconName};
 use crate::components::{header, sidebar, tweaks};
 use crate::theme::{self, Tokens};
+use crate::views::briefing;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, hsla, px, relative, App, BoxShadow, Context, Div, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyBinding, KeyBindingContextPredicate, KeyDownEvent,
-    ParentElement as _, Render, StatefulInteractiveElement as _, Styled, Window,
+    div, hsla, px, relative, App, BoxShadow, Context, Div, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyBinding, KeyBindingContextPredicate, KeyDownEvent, ParentElement as _, Render,
+    StatefulInteractiveElement as _, Styled, Window,
 };
 use radar_core::types::{Theme, View};
 use std::rc::Rc;
@@ -133,7 +134,7 @@ impl Render for Workspace {
                     .id("content")
                     .flex_1()
                     .overflow_y_scroll()
-                    .child(content(prefs.view, &t)),
+                    .child(content(prefs.view, app, window, cx)),
             );
         let tweaks = if self.tweaks_open {
             tweaks::panel(app, cx).into_any_element()
@@ -176,30 +177,12 @@ impl Render for Workspace {
 }
 
 /// Routed content. Each view's real page replaces its placeholder here in
-/// a later task (briefing 9, saved/archive 10, sources/categories 11,
-/// settings 12).
-fn content(view: View, t: &Tokens) -> Div {
-    let title = header::view_title(view);
-    // `viewStyles.wrap` + `viewStyles.title`.
-    div()
-        .w_full()
-        .max_w(px(1240.))
-        .mx_auto()
-        .pt(px(24.))
-        .px(px(32.))
-        .pb(px(80.))
-        .child(
-            div()
-                .id("content-title")
-                .test_support()
-                .aria_label(title)
-                .mb(px(6.))
-                .font_family(theme::FONT_SERIF)
-                .text_size(px(28.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(t.text)
-                .child(title),
-        )
+/// a later task (saved/archive 10, sources/categories 11, settings 12).
+fn content(view: View, app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
+    match view {
+        View::Briefing => briefing::render(app, window, cx),
+        other => briefing::page_frame(header::view_title(other), []),
+    }
 }
 
 /// Stand-in for the search palette (Task 13): the palette's scrim and
@@ -256,4 +239,4 @@ fn search_placeholder(window: &Window, t: &Tokens, cx: &Context<Workspace>) -> i
 
 #[cfg(test)]
 #[path = "shell_tests.rs"]
-mod shell_tests;
+pub(crate) mod shell_tests;

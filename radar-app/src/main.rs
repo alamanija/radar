@@ -9,6 +9,7 @@ mod bridge;
 mod components;
 mod single_instance;
 mod theme;
+mod views;
 mod workspace;
 
 use app_model::AppModel;
