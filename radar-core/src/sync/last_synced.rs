@@ -438,7 +438,7 @@ mod tests {
     fn populated_store_digests_round_trip() {
         use crate::types::{
             Accent, Archive, Article, Category, Density, Prefs, Profile, Source, SourceError,
-            SourceHealth, Theme, View, ViewMode,
+            SourceHealth, SummaryModel, Theme, View, ViewMode,
         };
         let article = |id: u64, image: bool, read: bool| Article {
             id,
@@ -455,6 +455,7 @@ mod tests {
             accent: "camel".into(),
             url: format!("https://x.test/{id}"),
             image_url: image.then(|| format!("https://x.test/{id}.png")),
+            summarized_by: None,
         };
         let source = |id: u32, category: &str, last: Option<i64>, health| Source {
             id,
@@ -484,6 +485,8 @@ mod tests {
                 run_at_launch: true,
                 schedule_enabled: true,
                 schedule_time: "06:45".into(),
+                summary_model: SummaryModel::Sonnet55,
+                stale_after_days: 14,
             },
             sources: vec![
                 source(1, "packaging", Some(1_767_261_000_000), SourceHealth::Ok),

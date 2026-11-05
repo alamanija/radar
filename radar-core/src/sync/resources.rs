@@ -199,6 +199,8 @@ fn synced_prefs(p: &Prefs) -> Value {
         "accent": p.accent,
         "useSerif": p.use_serif,
         "showAccent": p.show_accent,
+        "summaryModel": p.summary_model,
+        "staleAfterDays": p.stale_after_days,
     })
 }
 
@@ -210,7 +212,7 @@ impl SyncResource for PrefsRes {
         json!({ "prefs": synced_prefs(p) })
     }
 
-    /// The nine synced keys come from the server, each falling back to its
+    /// The synced keys come from the server, each falling back to its
     /// default when missing or invalid; per-device keys keep the local value.
     fn from_remote(r: &Value, prev: &Prefs) -> Prefs {
         let remote = match r.get("prefs") {
@@ -293,7 +295,7 @@ impl SyncResource for ArchivesRes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Accent, Density, SourceHealth, Theme, View, ViewMode};
+    use crate::types::{Accent, Density, SourceHealth, SummaryModel, Theme, View, ViewMode};
     use serde_json::json;
 
     fn src(id: u32, last: Option<i64>, health: SourceHealth) -> Source {
@@ -385,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn prefs_only_nine_keys_merged_over_defaults() {
+    fn prefs_only_synced_keys_merged_over_defaults() {
         let local = Prefs {
             theme: Theme::Dark,
             sidebar_collapsed: true,
@@ -394,19 +396,24 @@ mod tests {
         };
         let body = PrefsRes::push_body(&local);
         let keys: Vec<&String> = body["prefs"].as_object().unwrap().keys().collect();
-        assert_eq!(keys.len(), 9);
+        assert_eq!(keys.len(), 11);
+        assert_eq!(body["prefs"]["summaryModel"], "claude-haiku-5-5");
+        assert_eq!(body["prefs"]["staleAfterDays"], 0);
         assert!(body["prefs"].get("sidebarCollapsed").is_none());
         assert!(body["prefs"].get("view").is_none());
         assert_eq!(body["prefs"]["theme"], "dark");
 
         let merged = PrefsRes::from_remote(
             &json!({"prefs": {"viewMode": "list", "accent": "Rust", "density": "compact",
+                              "summaryModel": "claude-sonnet-5-5", "staleAfterDays": 14,
                               "sidebarCollapsed": false, "view": "settings"}, "updatedAt": "t"}),
             &local,
         );
         assert_eq!(merged.view_mode, ViewMode::List);
         assert_eq!(merged.accent, Accent::Rust);
         assert_eq!(merged.density, Density::Compact);
+        assert_eq!(merged.summary_model, SummaryModel::Sonnet55);
+        assert_eq!(merged.stale_after_days, 14);
         // Missing synced key falls through to the default, not the local value.
         assert_eq!(merged.theme, Theme::Light);
         assert_eq!(merged.schedule_time, "07:30");

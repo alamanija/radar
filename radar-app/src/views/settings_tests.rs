@@ -18,7 +18,7 @@ use radar_core::auth::AuthError;
 use radar_core::keychain::{KeyStore, MemKeyStore, ANTHROPIC_USER, CLERK_OAUTH_USER};
 use radar_core::store;
 use radar_core::sync::SyncStatus;
-use radar_core::types::View;
+use radar_core::types::{SummaryModel, View};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::{mpsc, Arc, Mutex};
@@ -107,12 +107,6 @@ fn settings_sections_have_the_expected_titles(cx: &mut TestAppContext) {
             "{id}"
         );
     }
-    assert_eq!(s.label(cx, "settings-staleness").as_deref(), Some("—"));
-    assert_eq!(
-        s.label(cx, "settings-row-staleness-sub").as_deref(),
-        Some("Not wired — articles aren't cached across briefings yet.")
-    );
-    assert_eq!(s.label(cx, "settings-model").as_deref(), Some("Opus 4.7"));
     assert_eq!(
         s.label(cx, "settings-row-gmail-label").as_deref(),
         Some("Gmail — newsletter inbox")
@@ -144,6 +138,60 @@ fn settings_sections_have_the_expected_titles(cx: &mut TestAppContext) {
     click(&s, cx, "settings-lens-edit");
     click(&s, cx, "settings-lens-clear");
     assert_eq!(s.read(cx, |m| m.model.profile.lens.clone()), "");
+}
+
+#[gpui_kit::test]
+fn summary_model_picker_sets_the_pref(cx: &mut TestAppContext) {
+    let s = settings(cx);
+    assert_eq!(
+        s.read(cx, |m| m.model.prefs.summary_model),
+        SummaryModel::Haiku55,
+        "Haiku is the default"
+    );
+    for (id, label) in [
+        ("settings-model-haiku", "Haiku 5.5"),
+        ("settings-model-sonnet", "Sonnet 5.5"),
+        ("settings-model-opus", "Opus 5.5"),
+    ] {
+        assert_eq!(s.label(cx, id).as_deref(), Some(label), "{id}");
+    }
+    assert_eq!(
+        s.label(cx, "settings-row-model-sub").as_deref(),
+        Some("Summarizes and categorizes new articles; earlier summaries are reused.")
+    );
+    click(&s, cx, "settings-model-opus");
+    assert_eq!(
+        s.read(cx, |m| m.model.prefs.summary_model),
+        SummaryModel::Opus55
+    );
+    click(&s, cx, "settings-model-haiku");
+    assert_eq!(
+        s.read(cx, |m| m.model.prefs.summary_model),
+        SummaryModel::Haiku55
+    );
+}
+
+#[gpui_kit::test]
+fn staleness_picker_sets_the_age_limit(cx: &mut TestAppContext) {
+    let s = settings(cx);
+    assert_eq!(
+        s.label(cx, "settings-row-staleness-sub").as_deref(),
+        Some("Leave out articles published more than this many days ago.")
+    );
+    for (id, label) in [
+        ("settings-staleness-0", "Off"),
+        ("settings-staleness-3", "3 days"),
+        ("settings-staleness-7", "7 days"),
+        ("settings-staleness-14", "14 days"),
+        ("settings-staleness-30", "30 days"),
+    ] {
+        assert_eq!(s.label(cx, id).as_deref(), Some(label), "{id}");
+    }
+    assert_eq!(s.read(cx, |m| m.model.prefs.stale_after_days), 0);
+    click(&s, cx, "settings-staleness-7");
+    assert_eq!(s.read(cx, |m| m.model.prefs.stale_after_days), 7);
+    click(&s, cx, "settings-staleness-0");
+    assert_eq!(s.read(cx, |m| m.model.prefs.stale_after_days), 0);
 }
 
 #[gpui_kit::test]

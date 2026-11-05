@@ -112,6 +112,7 @@ mod tests {
             accent: "camel".into(),
             url: String::new(),
             image_url: None,
+            summarized_by: None,
         }
     }
 

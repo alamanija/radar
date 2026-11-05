@@ -196,7 +196,7 @@ impl Fakes {
         let tray = self.tray.clone();
         let wakes = self.wakes.clone();
         Hooks {
-            briefing: Arc::new(move |_, _, _| {
+            briefing: Arc::new(move |_| {
                 runs.fetch_add(1, Ordering::SeqCst);
                 let resp = resp.clone();
                 Box::pin(async move { Ok(resp) })

@@ -580,6 +580,7 @@ mod tests {
             accent: "olive".into(),
             url: "https://x.test/1".into(),
             image_url: None,
+            summarized_by: None,
         }
     }
 

@@ -27,7 +27,7 @@ use chrono::{DateTime, Local};
 use futures::future::BoxFuture;
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use radar_core::auth::Session;
-use radar_core::ingest::{self, CategoryInput, SourceInput};
+use radar_core::ingest::{self, BriefingRequest};
 use radar_core::keychain::KeyStore;
 use radar_core::model::{ArticleState, BriefingOutcome, RadarModel};
 use radar_core::store;
@@ -55,16 +55,10 @@ pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(100);
 pub const SAVE_RETRY_MIN: Duration = Duration::from_secs(1);
 pub const SAVE_RETRY_MAX: Duration = Duration::from_secs(60);
 
-/// Runs a briefing: `(sources, categories, lens)` to the response. The
-/// returned future runs on the tokio runtime.
+/// Runs a briefing request to the response. The returned future runs on
+/// the tokio runtime.
 pub type BriefingFn = Arc<
-    dyn Fn(
-            Vec<SourceInput>,
-            Vec<CategoryInput>,
-            Option<String>,
-        ) -> BoxFuture<'static, Result<BriefingResponse, String>>
-        + Send
-        + Sync,
+    dyn Fn(BriefingRequest) -> BoxFuture<'static, Result<BriefingResponse, String>> + Send + Sync,
 >;
 
 /// Posts the "briefing ready" notification for a finished run.
@@ -101,7 +95,7 @@ impl Hooks {
     /// as off. The clock is the real one.
     pub fn inert() -> Self {
         Self {
-            briefing: Arc::new(|_, _, _| {
+            briefing: Arc::new(|_| {
                 Box::pin(async {
                     Ok(BriefingResponse {
                         articles: Vec::new(),
@@ -124,7 +118,7 @@ impl Hooks {
 /// The real pipeline, `ingest::run_briefing`: it fetches every feed and,
 /// with categories set, reads the API key from the OS keychain.
 pub fn ingest_runner() -> BriefingFn {
-    Arc::new(|sources, categories, lens| Box::pin(ingest::run_briefing(sources, categories, lens)))
+    Arc::new(|req| Box::pin(ingest::run_briefing(req)))
 }
 
 pub struct AppModel {
@@ -421,10 +415,15 @@ impl AppModel {
         if self.model.scanning {
             return;
         }
-        let (sources, categories, lens, attempted) = self.model.briefing_inputs();
-        log::info!("[briefing] started ({} sources)", sources.len());
+        let (req, attempted) = self.model.briefing_inputs();
+        log::info!(
+            "[briefing] started ({} sources, {} known summaries, {})",
+            req.sources.len(),
+            req.known.len(),
+            req.model.id()
+        );
         self.update_model(cx, RadarModel::begin_briefing);
-        let run = (self.hooks.briefing)(sources, categories, lens);
+        let run = (self.hooks.briefing)(req);
         cx.spawn(async move |this, cx| {
             let result = bridge::on_rt(run).await;
             let _ = this.update(cx, |this, cx| {
@@ -836,7 +835,7 @@ mod tests {
             fetched_at: chrono::Utc::now(),
         };
         model.update(cx, |m, _| {
-            m.hooks.briefing = Arc::new(move |_, _, _| {
+            m.hooks.briefing = Arc::new(move |_| {
                 let (gate, resp) = (gate.clone(), resp.clone());
                 Box::pin(async move {
                     let _ = gate.recv().await;

@@ -74,6 +74,7 @@ mod tests {
             accent: "ink".into(),
             url: String::new(),
             image_url: None,
+            summarized_by: None,
         }
     }
 

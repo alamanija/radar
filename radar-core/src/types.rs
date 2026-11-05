@@ -21,6 +21,53 @@ pub struct Article {
     pub accent: String,
     pub url: String,
     pub image_url: Option<String>,
+    /// Model id that wrote `summary` and `category`; `None` when they are
+    /// the raw feed excerpt and the source's category (no API key, no
+    /// categories, or the request failed). Briefings reuse a summarized
+    /// article instead of sending it to Claude again. Omitted when `None`
+    /// so stored articles from before this field keep their exact shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarized_by: Option<String>,
+}
+
+/// The Claude model that summarizes and categorizes articles (prefs
+/// `summaryModel`, stored as the model id).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SummaryModel {
+    #[default]
+    #[serde(rename = "claude-haiku-5-5")]
+    Haiku55,
+    #[serde(rename = "claude-sonnet-5-5")]
+    Sonnet55,
+    #[serde(rename = "claude-opus-5-5")]
+    Opus55,
+}
+
+impl SummaryModel {
+    pub const ALL: [SummaryModel; 3] = [Self::Haiku55, Self::Sonnet55, Self::Opus55];
+
+    /// The API model id.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Haiku55 => "claude-haiku-5-5",
+            Self::Sonnet55 => "claude-sonnet-5-5",
+            Self::Opus55 => "claude-opus-5-5",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Haiku55 => "Haiku 5.5",
+            Self::Sonnet55 => "Sonnet 5.5",
+            Self::Opus55 => "Opus 5.5",
+        }
+    }
+
+    /// Whether the API can retry a refusal on another model server-side
+    /// (`fallbacks: "default"`). Haiku 5.5 has no server-side fallback.
+    pub fn server_fallback(self) -> bool {
+        !matches!(self, Self::Haiku55)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -181,6 +228,12 @@ pub struct Prefs {
     pub schedule_enabled: bool,
     #[serde(default = "d_time", deserialize_with = "lenient_time")]
     pub schedule_time: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub summary_model: SummaryModel,
+    /// Articles published more than this many days ago are left out of a
+    /// briefing (and never sent to Claude). `0` keeps every article.
+    #[serde(default, deserialize_with = "lenient")]
+    pub stale_after_days: u32,
 }
 
 impl Default for Prefs {
@@ -197,6 +250,8 @@ impl Default for Prefs {
             run_at_launch: false,
             schedule_enabled: false,
             schedule_time: d_time(),
+            summary_model: SummaryModel::default(),
+            stale_after_days: 0,
         }
     }
 }
@@ -295,6 +350,63 @@ mod tests {
         assert!(p.schedule_enabled);
         assert_eq!(p.accent, Accent::Rust);
         assert_eq!(p.view, View::Briefing);
+    }
+
+    #[test]
+    fn summary_prefs_default_to_haiku_and_no_age_limit() {
+        let p = Prefs::default();
+        assert_eq!(p.summary_model, SummaryModel::Haiku55);
+        assert_eq!(p.stale_after_days, 0);
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["summaryModel"], "claude-haiku-5-5");
+        assert_eq!(v["staleAfterDays"], 0);
+    }
+
+    #[test]
+    fn summary_prefs_parse_and_fall_back() {
+        let p: Prefs = serde_json::from_value(json!({
+            "summaryModel": "claude-opus-5-5", "staleAfterDays": 7
+        }))
+        .unwrap();
+        assert_eq!(p.summary_model, SummaryModel::Opus55);
+        assert_eq!(p.stale_after_days, 7);
+        let p: Prefs = serde_json::from_value(json!({
+            "summaryModel": "gpt-9", "staleAfterDays": "week"
+        }))
+        .unwrap();
+        assert_eq!(p.summary_model, SummaryModel::Haiku55);
+        assert_eq!(p.stale_after_days, 0);
+    }
+
+    #[test]
+    fn summary_model_ids_and_fallback_support() {
+        assert_eq!(SummaryModel::Haiku55.id(), "claude-haiku-5-5");
+        assert_eq!(SummaryModel::Sonnet55.id(), "claude-sonnet-5-5");
+        assert_eq!(SummaryModel::Opus55.id(), "claude-opus-5-5");
+        // Haiku has no server-side refusal fallback.
+        assert!(!SummaryModel::Haiku55.server_fallback());
+        assert!(SummaryModel::Sonnet55.server_fallback());
+        assert!(SummaryModel::Opus55.server_fallback());
+    }
+
+    #[test]
+    fn article_summarized_by_is_optional_on_the_wire() {
+        let v = json!({
+            "id": 1, "title": "T", "source": "S", "sourceId": 1,
+            "category": "c", "categoryLabel": "C", "summary": "s",
+            "published": "now", "publishedAt": null, "read": false,
+            "bookmarked": false, "accent": "camel", "url": "u", "imageUrl": null
+        });
+        let a: Article = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(a.summarized_by, None);
+        // Absent stays absent, so files written before this field are unchanged.
+        assert_eq!(serde_json::to_value(&a).unwrap(), v);
+        let a = Article {
+            summarized_by: Some("claude-haiku-5-5".into()),
+            ..a
+        };
+        let out = serde_json::to_value(&a).unwrap();
+        assert_eq!(out["summarizedBy"], "claude-haiku-5-5");
     }
 
     #[test]

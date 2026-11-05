@@ -1,7 +1,7 @@
 //! UI-free application state and its mutations. No IO and no clocks: time
 //! is always a parameter.
 
-use crate::ingest::{CategoryInput, SourceInput};
+use crate::ingest::{BriefingRequest, CategoryInput, KnownSummary, SourceInput};
 use crate::store::Snapshot;
 use crate::types::{
     Account, Archive, Article, BriefingResponse, Category, Prefs, Profile, Source, SourceError,
@@ -348,14 +348,9 @@ impl RadarModel {
         self.sources.iter().any(is_fetched)
     }
 
-    pub fn briefing_inputs(
-        &self,
-    ) -> (
-        Vec<SourceInput>,
-        Vec<CategoryInput>,
-        Option<String>,
-        HashSet<u32>,
-    ) {
+    /// The next briefing's request, and the ids of the sources it will
+    /// attempt (for the health stamps in [`finish_briefing`](Self::finish_briefing)).
+    pub fn briefing_inputs(&self) -> (BriefingRequest, HashSet<u32>) {
         let enabled: Vec<&Source> = self.sources.iter().filter(|s| is_fetched(s)).collect();
         let sources = enabled
             .iter()
@@ -379,7 +374,35 @@ impl RadarModel {
             .collect();
         let lens = self.profile.lens.trim();
         let lens = (!lens.is_empty()).then(|| lens.to_string());
-        (sources, categories, lens, attempted)
+        let req = BriefingRequest {
+            sources,
+            categories,
+            lens,
+            model: self.prefs.summary_model,
+            known: self.known_summaries(),
+            stale_after_days: self.prefs.stale_after_days,
+        };
+        (req, attempted)
+    }
+
+    /// Every summary Claude wrote that is still around: the live articles,
+    /// then the archives newest first; the first copy of an id wins.
+    fn known_summaries(&self) -> HashMap<u64, KnownSummary> {
+        let mut known = HashMap::new();
+        let all = self
+            .articles
+            .iter()
+            .chain(self.archives.iter().flat_map(|a| a.articles.iter()));
+        for a in all {
+            if let Some(model) = &a.summarized_by {
+                known.entry(a.id).or_insert_with(|| KnownSummary {
+                    summary: a.summary.clone(),
+                    category: a.category.clone(),
+                    model: model.clone(),
+                });
+            }
+        }
+        known
     }
 
     // ---- derived ----
@@ -449,6 +472,7 @@ mod tests {
             accent: "ink".into(),
             url: String::new(),
             image_url: None,
+            summarized_by: None,
         }
     }
     fn src(id: u32, cat: &str, is_default: bool) -> Source {
@@ -666,10 +690,41 @@ mod tests {
         let mut s3 = src(3, "a", false);
         s3.feed_url = None;
         m.sources = vec![src(1, "a", false), s2, s3];
-        let (si, _ci, lens, att) = m.briefing_inputs();
-        assert_eq!(si.len(), 1);
-        assert_eq!(lens, None);
+        let (req, att) = m.briefing_inputs();
+        assert_eq!(req.sources.len(), 1);
+        assert_eq!(req.lens, None);
         assert_eq!(att, HashSet::from([1]));
+    }
+
+    #[test]
+    fn briefing_inputs_carry_model_age_limit_and_known_summaries() {
+        let mut m = model();
+        m.prefs.summary_model = SummaryModel::Opus55;
+        m.prefs.stale_after_days = 7;
+        let summarized = |id: u64, text: &str| Article {
+            summary: text.into(),
+            summarized_by: Some("claude-haiku-5-5".into()),
+            ..art(id, 1)
+        };
+        m.articles = vec![summarized(1, "current"), art(2, 1)];
+        m.archives = vec![Archive {
+            id: 1,
+            run_at: "2026-11-01T07:30:00.000Z".into(),
+            // Article 1 again (the live copy wins), 3 only in the archive,
+            // 4 never summarized.
+            articles: vec![summarized(1, "archived"), summarized(3, "old"), art(4, 1)],
+            errors: Vec::new(),
+        }];
+
+        let (req, _) = m.briefing_inputs();
+        assert_eq!(req.model, SummaryModel::Opus55);
+        assert_eq!(req.stale_after_days, 7);
+        let mut ids: Vec<u64> = req.known.keys().copied().collect();
+        ids.sort();
+        assert_eq!(ids, [1, 3], "only summarized articles are known");
+        assert_eq!(req.known[&1].summary, "current");
+        assert_eq!(req.known[&3].summary, "old");
+        assert_eq!(req.known[&3].model, "claude-haiku-5-5");
     }
 
     #[test]

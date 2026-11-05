@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use feed_rs::parser;
 use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -10,7 +11,7 @@ use std::time::Duration;
 
 use crate::keychain;
 use crate::summarize;
-use crate::types::{Article, BriefingResponse, SourceError};
+use crate::types::{Article, BriefingResponse, SourceError, SummaryModel};
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -45,13 +46,39 @@ fn resolve(cats: &HashMap<String, CategoryInput>, id: &str) -> (String, String, 
     }
 }
 
-/// Fetch every source with a feed URL, optionally summarize via Claude, and
-/// return the briefing.
-pub async fn run_briefing(
-    sources: Vec<SourceInput>,
-    categories: Vec<CategoryInput>,
-    lens: Option<String>,
-) -> Result<BriefingResponse, String> {
+/// A summary an earlier briefing got from Claude, reused for the same
+/// article id instead of asking again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnownSummary {
+    pub summary: String,
+    /// Category id Claude picked.
+    pub category: String,
+    /// Model id that wrote it.
+    pub model: String,
+}
+
+/// Everything one briefing needs.
+#[derive(Debug, Clone, Default)]
+pub struct BriefingRequest {
+    pub sources: Vec<SourceInput>,
+    pub categories: Vec<CategoryInput>,
+    /// The reader's lens, injected into the system prompt when set.
+    pub lens: Option<String>,
+    pub model: SummaryModel,
+    /// Earlier summaries by article id.
+    pub known: HashMap<u64, KnownSummary>,
+    /// Leave out articles published more than this many days ago; `0` keeps
+    /// all.
+    pub stale_after_days: u32,
+}
+
+/// Claude requests in flight at once during a briefing.
+const SUMMARY_CONCURRENCY: usize = 6;
+
+/// Fetch every source with a feed URL, drop stale articles, reuse known
+/// summaries, summarize the rest via Claude (with an API key and at least
+/// one category), and return the briefing newest first.
+pub async fn run_briefing(req: BriefingRequest) -> Result<BriefingResponse, String> {
     let client = reqwest::Client::builder()
         .user_agent("Radar/0.1 (desktop news briefing)")
         .timeout(Duration::from_secs(15))
@@ -59,13 +86,14 @@ pub async fn run_briefing(
         .map_err(|e| format!("http client: {e}"))?;
 
     let cat_map: Arc<HashMap<String, CategoryInput>> = Arc::new(
-        categories
+        req.categories
             .iter()
             .map(|c| (c.id.clone(), c.clone()))
             .collect(),
     );
 
-    let targets: Vec<SourceInput> = sources
+    let targets: Vec<SourceInput> = req
+        .sources
         .into_iter()
         .filter(|s| s.feed_url.as_deref().is_some_and(|u| !u.is_empty()))
         .collect();
@@ -77,47 +105,59 @@ pub async fn run_briefing(
     });
     let results = join_all(fetches).await;
 
-    let mut articles: Vec<Article> = Vec::new();
+    let mut fetched: Vec<Article> = Vec::new();
     let mut errors: Vec<SourceError> = Vec::new();
     for result in results {
         match result {
-            Ok(mut fetched) => articles.append(&mut fetched),
+            Ok(mut arts) => fetched.append(&mut arts),
             Err(e) => errors.push(e),
         }
     }
 
-    // Claude pass: requires both an API key AND at least one category (the
-    // output schema's enum can't be empty).
-    if !categories.is_empty() {
-        if let Some(api_key) = keychain::read_api_key() {
-            let claude_cats: Vec<(String, String)> = categories
-                .iter()
-                .map(|c| (c.id.clone(), c.description.clone()))
-                .collect();
-            let claude_cats = Arc::new(claude_cats);
-            let lens_arc = Arc::new(lens.clone());
+    let fresh = drop_stale(fetched, req.stale_after_days, Utc::now());
+    let (mut articles, todo) = split_known(fresh, &req.known, &cat_map);
 
-            let futures = articles.into_iter().map(|article| {
-                let client = client.clone();
-                let api_key = api_key.clone();
-                let cats = Arc::clone(&cat_map);
-                let claude_cats = Arc::clone(&claude_cats);
-                let lens = Arc::clone(&lens_arc);
-                async move {
-                    enhance(
-                        &client,
-                        &api_key,
-                        article,
-                        &cats,
-                        &claude_cats,
-                        lens.as_deref(),
-                    )
-                    .await
-                }
-            });
-            let enhanced = join_all(futures).await;
+    // Claude pass: requires an API key AND at least one category (the output
+    // schema's enum can't be empty). The keychain is only read when there
+    // is something to summarize.
+    let api_key = (!req.categories.is_empty() && !todo.is_empty())
+        .then(keychain::read_api_key)
+        .flatten();
+    match api_key {
+        None => articles.extend(todo),
+        Some(api_key) => {
+            let claude_cats: Arc<Vec<(String, String)>> = Arc::new(
+                req.categories
+                    .iter()
+                    .map(|c| (c.id.clone(), c.description.clone()))
+                    .collect(),
+            );
+            let lens = Arc::new(req.lens);
+            let model = req.model;
+            let enhanced: Vec<_> = stream::iter(todo)
+                .map(|article| {
+                    let client = client.clone();
+                    let api_key = api_key.clone();
+                    let cats = Arc::clone(&cat_map);
+                    let claude_cats = Arc::clone(&claude_cats);
+                    let lens = Arc::clone(&lens);
+                    async move {
+                        enhance(
+                            &client,
+                            &api_key,
+                            model,
+                            article,
+                            &cats,
+                            &claude_cats,
+                            lens.as_deref(),
+                        )
+                        .await
+                    }
+                })
+                .buffer_unordered(SUMMARY_CONCURRENCY)
+                .collect()
+                .await;
 
-            articles = Vec::with_capacity(enhanced.len());
             let mut claude_failures = 0usize;
             let mut first_claude_error: Option<String> = None;
             for result in enhanced {
@@ -161,9 +201,50 @@ pub async fn run_briefing(
     })
 }
 
+/// Articles published within `days` of `now`; `0` keeps all, and an
+/// article without a date is always kept.
+fn drop_stale(articles: Vec<Article>, days: u32, now: DateTime<Utc>) -> Vec<Article> {
+    if days == 0 {
+        return articles;
+    }
+    let cutoff = now - chrono::Duration::days(i64::from(days));
+    articles
+        .into_iter()
+        .filter(|a| a.published_at.is_none_or(|t| t >= cutoff))
+        .collect()
+}
+
+/// Splits fetched articles into those a known summary covers (filled in,
+/// label and accent from the category as it is now) and those to send to
+/// Claude. A known summary whose category no longer exists doesn't count.
+fn split_known(
+    articles: Vec<Article>,
+    known: &HashMap<u64, KnownSummary>,
+    cats: &HashMap<String, CategoryInput>,
+) -> (Vec<Article>, Vec<Article>) {
+    let mut reused = Vec::new();
+    let mut todo = Vec::new();
+    for mut a in articles {
+        match known.get(&a.id).filter(|k| cats.contains_key(&k.category)) {
+            Some(k) => {
+                let (cat, label, accent) = resolve(cats, &k.category);
+                a.summary = k.summary.clone();
+                a.category = cat;
+                a.category_label = label;
+                a.accent = accent;
+                a.summarized_by = Some(k.model.clone());
+                reused.push(a);
+            }
+            None => todo.push(a),
+        }
+    }
+    (reused, todo)
+}
+
 async fn enhance(
     client: &reqwest::Client,
     api_key: &str,
+    model: SummaryModel,
     mut article: Article,
     cats: &HashMap<String, CategoryInput>,
     claude_cats: &[(String, String)],
@@ -172,6 +253,7 @@ async fn enhance(
     match summarize::summarize(
         client,
         api_key,
+        model,
         &article.title,
         &article.source,
         &article.summary,
@@ -186,6 +268,7 @@ async fn enhance(
             article.category = cat;
             article.category_label = label;
             article.accent = accent;
+            article.summarized_by = Some(model.id().to_string());
             Ok(article)
         }
         Err(msg) => Err(Box::new((article, msg))),
@@ -260,6 +343,7 @@ async fn fetch_source(
                 accent: accent.clone(),
                 url,
                 image_url,
+                summarized_by: None,
             })
         })
         .collect();
@@ -539,7 +623,12 @@ mod tests {
             feed_url: Some(server.url("/feed")),
         };
         // No categories: no Claude pass, so the keychain is never read.
-        let resp = run_briefing(vec![source], Vec::new(), None).await.unwrap();
+        let resp = run_briefing(BriefingRequest {
+            sources: vec![source],
+            ..BriefingRequest::default()
+        })
+        .await
+        .unwrap();
         assert_eq!(resp.articles.len(), 2);
         let by_url = |arts: &[Article], tail: &str| {
             arts.iter()
@@ -594,5 +683,138 @@ mod tests {
             resolve(&cats, "nope"),
             ("uncategorized".into(), "Uncategorized".into(), "ink".into())
         );
+    }
+
+    fn cat(id: &str, label: &str, accent: &str) -> CategoryInput {
+        CategoryInput {
+            id: id.into(),
+            label: label.into(),
+            description: format!("{label} news"),
+            accent: accent.into(),
+        }
+    }
+
+    fn cat_map(cats: &[CategoryInput]) -> HashMap<String, CategoryInput> {
+        cats.iter().map(|c| (c.id.clone(), c.clone())).collect()
+    }
+
+    fn raw(id: u64, published_at: Option<DateTime<Utc>>) -> Article {
+        Article {
+            id,
+            title: format!("T{id}"),
+            source: "S".into(),
+            source_id: 1,
+            category: "packaging".into(),
+            category_label: "Packaging".into(),
+            summary: format!("raw excerpt {id}"),
+            published: "recent".into(),
+            published_at,
+            read: false,
+            bookmarked: false,
+            accent: "camel".into(),
+            url: format!("https://e.com/{id}"),
+            image_url: None,
+            summarized_by: None,
+        }
+    }
+
+    fn known(summary: &str, category: &str) -> KnownSummary {
+        KnownSummary {
+            summary: summary.into(),
+            category: category.into(),
+            model: "claude-haiku-5-5".into(),
+        }
+    }
+
+    #[test]
+    fn known_summaries_are_reused_and_the_rest_go_to_claude() {
+        let cats = cat_map(&[
+            cat("packaging", "Packaging", "camel"),
+            // Renamed since the summary was written: the new label wins.
+            cat("branding", "Brand & Identity", "olive"),
+        ]);
+        let known = HashMap::from([
+            (1, known("Cached one.", "branding")),
+            // Its category was deleted: summarize again.
+            (2, known("Cached two.", "gone")),
+        ]);
+        let (reused, todo) = split_known(
+            vec![raw(1, None), raw(2, None), raw(3, None)],
+            &known,
+            &cats,
+        );
+
+        assert_eq!(reused.len(), 1);
+        let a = &reused[0];
+        assert_eq!(a.id, 1);
+        assert_eq!(a.summary, "Cached one.");
+        assert_eq!(a.category, "branding");
+        assert_eq!(a.category_label, "Brand & Identity");
+        assert_eq!(a.accent, "olive");
+        assert_eq!(a.summarized_by.as_deref(), Some("claude-haiku-5-5"));
+
+        let ids: Vec<u64> = todo.iter().map(|a| a.id).collect();
+        assert_eq!(ids, [2, 3]);
+        assert!(todo.iter().all(|a| a.summarized_by.is_none()));
+        assert_eq!(todo[0].summary, "raw excerpt 2", "the raw excerpt is kept");
+    }
+
+    #[test]
+    fn stale_articles_are_dropped_when_a_limit_is_set() {
+        let now = DateTime::parse_from_rfc3339("2026-11-05T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let days_ago = |d: i64| Some(now - chrono::Duration::days(d));
+        let arts = || {
+            vec![
+                raw(1, days_ago(1)),
+                raw(2, days_ago(7)),
+                raw(3, days_ago(8)),
+                // No date: kept, there's nothing to judge it by.
+                raw(4, None),
+            ]
+        };
+        let ids = |v: Vec<Article>| v.iter().map(|a| a.id).collect::<Vec<_>>();
+
+        assert_eq!(ids(drop_stale(arts(), 0, now)), [1, 2, 3, 4], "0 keeps all");
+        assert_eq!(ids(drop_stale(arts(), 7, now)), [1, 2, 4]);
+        assert_eq!(ids(drop_stale(arts(), 3, now)), [1, 4]);
+    }
+
+    /// Every fetched article already has a summary: nothing is sent to
+    /// Claude, so the keychain is never read, and the cached text comes back.
+    #[tokio::test]
+    async fn fully_cached_briefing_makes_no_claude_requests() {
+        use httpmock::prelude::*;
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/feed");
+                then.status(200).body(DIELINE_FEED);
+            })
+            .await;
+        let ids = [
+            hash_id(1, "https://thedieline.com/oat-milk-cartons"),
+            hash_id(1, "https://thedieline.com/carton-lab"),
+        ];
+        let resp = run_briefing(BriefingRequest {
+            sources: vec![SourceInput {
+                id: 1,
+                name: "Dieline".into(),
+                category: "packaging".into(),
+                feed_url: Some(server.url("/feed")),
+            }],
+            categories: vec![cat("packaging", "Packaging", "camel")],
+            known: ids
+                .iter()
+                .map(|&id| (id, known("Cached.", "packaging")))
+                .collect(),
+            ..BriefingRequest::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(resp.articles.len(), 2);
+        assert!(resp.articles.iter().all(|a| a.summary == "Cached."));
+        assert!(resp.errors.is_empty(), "{:?}", resp.errors);
     }
 }

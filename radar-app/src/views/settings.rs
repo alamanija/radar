@@ -41,7 +41,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled, StyledImage as _, Subscription, Window,
 };
 use radar_core::keychain;
-use radar_core::types::{Account, Density, Theme};
+use radar_core::types::{Account, Density, SummaryModel, Theme};
 
 const SUBTITLE: &str = "Radar runs locally by default. Sign in to sync your sources, \
                         categories, profile, and read state across devices.";
@@ -787,6 +787,52 @@ fn choice<T: Copy + PartialEq + 'static>(
     .render(t, [])
 }
 
+/// The summarization model: one pill per [`SummaryModel`].
+fn model_control(current: SummaryModel, t: &Tokens) -> Div {
+    SummaryModel::ALL
+        .into_iter()
+        .fold(controls(4.), |row, model| {
+            let id = match model {
+                SummaryModel::Haiku55 => "settings-model-haiku",
+                SummaryModel::Sonnet55 => "settings-model-sonnet",
+                SummaryModel::Opus55 => "settings-model-opus",
+            };
+            row.child(choice(
+                id,
+                model.label(),
+                None,
+                model,
+                current,
+                |p, v| p.summary_model = v,
+                t,
+            ))
+        })
+}
+
+/// The age limit in days (`0` is off).
+fn staleness_control(current: u32, t: &Tokens) -> Div {
+    const OPTIONS: [(u32, &str, &str); 5] = [
+        (0, "settings-staleness-0", "Off"),
+        (3, "settings-staleness-3", "3 days"),
+        (7, "settings-staleness-7", "7 days"),
+        (14, "settings-staleness-14", "14 days"),
+        (30, "settings-staleness-30", "30 days"),
+    ];
+    OPTIONS
+        .into_iter()
+        .fold(controls(4.), |row, (days, id, label)| {
+            row.child(choice(
+                id,
+                label,
+                None,
+                days,
+                current,
+                |p, v| p.stale_after_days = v,
+                t,
+            ))
+        })
+}
+
 /// The updates control: one control per updater state.
 fn updates_control(state: &updater::State, t: &Tokens) -> AnyElement {
     let act = |f: fn(&mut AppModel, &mut Context<AppModel>)| {
@@ -962,8 +1008,8 @@ pub fn render(view: &SettingsView, app: &AppModel, cx: &Context<Workspace>) -> D
                 row(
                     "staleness",
                     "Staleness threshold",
-                    Some("Not wired — articles aren't cached across briefings yet."),
-                    mono("settings-staleness", "—", t.text_3),
+                    Some("Leave out articles published more than this many days ago."),
+                    staleness_control(prefs.stale_after_days, &t),
                     &t,
                 ),
             ],
@@ -977,8 +1023,8 @@ pub fn render(view: &SettingsView, app: &AppModel, cx: &Context<Workspace>) -> D
                 row(
                     "model",
                     "Model",
-                    Some("claude-opus-4-7"),
-                    mono("settings-model", "Opus 4.7", t.text_2),
+                    Some("Summarizes and categorizes new articles; earlier summaries are reused."),
+                    model_control(prefs.summary_model, &t),
                     &t,
                 ),
                 row(
