@@ -46,7 +46,8 @@ pub trait SyncResource {
     /// Empty locals don't seed an empty server.
     fn is_empty(local: &Self::Local) -> bool;
     /// The value to push when the local value was edited while pulls were
-    /// failing. Local wins by default; archives union-merge.
+    /// failing. Local wins by default; archives union-merge. An override that
+    /// unions must also set [`OFFLINE_MERGE_UNIONS`](Self::OFFLINE_MERGE_UNIONS).
     fn merge_offline(_remote: &Value, local: &Self::Local) -> Self::Local {
         local.clone()
     }
@@ -325,6 +326,12 @@ impl<R: SyncResource> SyncedResource<R> {
     }
 
     /// A queued PUT for this resource landed (from `DrainReport::succeeded`).
+    ///
+    /// A pending [seed](Self::seed_digest) moves to the value that landed.
+    /// The seed stands for the last value this device knows is on the
+    /// server, and a drained body is exactly that: this device's own write.
+    /// Left at the older digest, the next pull would take this write for
+    /// another device's and drop an edit made since.
     pub fn on_drained(&mut self, body: &Value, local: &R::Local) {
         if body.is_null() {
             return;
@@ -333,6 +340,9 @@ impl<R: SyncResource> SyncedResource<R> {
             self.etag = Some(t);
         }
         self.server_key = Some(R::stable_key(&R::from_remote(body, local)));
+        if self.seed_digest.is_some() {
+            self.seed_digest = self.server_key.as_deref().map(key_digest);
+        }
     }
 
     fn accept_snapshot(&mut self, snap: &Value, base: &R::Local) {
@@ -1004,6 +1014,70 @@ mod tests {
         put.assert_calls_async(1).await;
         assert_eq!(got.iter().map(|a| a.id).collect::<Vec<_>>(), vec![2, 3, 1]);
         assert!(!r.needs_push(&got));
+    }
+
+    /// I-1: this device's own queued edit drains while a seeded baseline is
+    /// pending. The drained value is now the last-synced one, so a newer
+    /// edit made this session is pushed over it rather than dropped as a
+    /// "third value", and a further failed pull persists the drained digest.
+    #[tokio::test]
+    async fn drained_own_write_advances_a_seeded_baseline() {
+        let server = MockServer::start_async().await;
+        let c = client(&server.base_url());
+        let synced = profile("Ada"); // last synced by the earlier run
+        let stuck = profile("Bea"); // its quit push, queued
+        let newer = profile("Cy"); // edited this session while offline
+        let mut r = SyncedResource::<ProfileRes>::new();
+        r.seed_last_synced(&digest_of(&synced), &stuck);
+        fail_pull(&server, &c, &mut r, &stuck).await;
+
+        // The queued PUT of "Bea" lands.
+        r.on_drained(
+            &json!({"name": "Bea", "role": "AD", "lens": null, "updatedAt": "t2"}),
+            &stuck,
+        );
+        assert_eq!(r.seed_digest, Some(digest_of(&stuck)));
+        fail_pull(&server, &c, &mut r, &newer).await;
+        assert_eq!(r.last_synced_digest(), Some(digest_of(&stuck)));
+
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/sync/profile");
+                then.status(200).json_body(
+                    json!({"name": "Bea", "role": "AD", "lens": null, "updatedAt": "t2"}),
+                );
+            })
+            .await;
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/profile")
+                    .header("if-match", "W/\"t2\"")
+                    .json_body(json!({"name": "Cy", "role": "AD", "lens": null}));
+                then.status(200).json_body(
+                    json!({"name": "Cy", "role": "AD", "lens": null, "updatedAt": "t3"}),
+                );
+            })
+            .await;
+        let got = r.pull(&c, &newer).await.unwrap();
+        put.assert_calls_async(1).await;
+        assert_eq!(got, Some(newer.clone()));
+        assert_eq!(r.etag.as_deref(), Some("t3"));
+        assert!(r.pulled && !r.needs_push(&newer));
+        assert_eq!(r.seed_digest, None);
+    }
+
+    /// Without a seeded baseline a drain leaves the seed alone (nothing to
+    /// advance).
+    #[test]
+    fn drain_without_a_pending_seed_adds_none() {
+        let mut r = SyncedResource::<ProfileRes>::new();
+        r.on_drained(
+            &json!({"name": "Bea", "role": "AD", "lens": null, "updatedAt": "t2"}),
+            &profile("Bea"),
+        );
+        assert_eq!(r.seed_digest, None);
+        assert_eq!(r.last_synced_digest(), Some(digest_of(&profile("Bea"))));
     }
 
     #[tokio::test]
