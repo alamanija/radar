@@ -315,10 +315,8 @@ fn onboarding_steps_navigate_and_show_progress(cx: &mut TestAppContext) {
     s.edit(cx, |m| m.prefs.view = View::Briefing);
     s.click(cx, "onboarding-cta-3");
     assert_eq!(s.read(cx, |m| m.model.prefs.view), View::Sources);
-    assert_eq!(
-        s.ws.read_with(cx, |w, _| w.sources_intent),
-        Some(crate::workspace::SourcesIntent::Add)
-    );
+    // The Sources view consumed the intent (no categories: no add row).
+    assert_eq!(s.ws.read_with(cx, |w, _| w.sources_intent), None);
 
     s.edit(cx, |m| m.prefs.view = View::Briefing);
     s.click(cx, "onboarding-cta-4");

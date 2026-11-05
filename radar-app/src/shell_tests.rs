@@ -174,10 +174,13 @@ fn sidebar_counts(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn sidebar_add_source_opens_sources_with_intent(cx: &mut TestAppContext) {
     let s = boot(cx);
+    s.edit(cx, |m| m.categories = vec![category("tools")]);
     s.click(cx, "sidebar-add-source");
     assert_eq!(s.read(cx, |m| m.model.prefs.view), View::Sources);
+    // The Sources view consumes the intent (and opens its add row).
+    assert!(s.exists(cx, "source-edit-name"));
     let intent = s.ws.read_with(cx, |w, _| w.sources_intent);
-    assert_eq!(intent, Some(SourcesIntent::Add));
+    assert_eq!(intent, None::<SourcesIntent>);
 }
 
 #[gpui_kit::test]

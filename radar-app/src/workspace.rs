@@ -18,6 +18,8 @@ use crate::components::icon::{Icon, IconName};
 use crate::components::{header, sidebar, tweaks};
 use crate::theme::{self, Tokens};
 use crate::views::archive::ArchiveView;
+use crate::views::categories::{self, CategoriesView};
+use crate::views::sources::{self, SourcesView};
 use crate::views::{archive, briefing, saved};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -35,7 +37,8 @@ gpui_kit::actions!(radar, [OpenSearch, RunBriefing, ToggleSidebar, ToggleTheme])
 pub const KEY_CONTEXT: &str = "Workspace";
 
 /// Why the Sources view was opened: the sidebar "+" asks it to open its
-/// add row (consumed and cleared by the Sources view, Task 11).
+/// add row (consumed and cleared by [`Workspace::render`] once the Sources
+/// view is shown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcesIntent {
     Add,
@@ -47,6 +50,10 @@ pub struct Workspace {
     pub sources_intent: Option<SourcesIntent>,
     /// Drill-in state of the Archive view.
     pub archive: ArchiveView,
+    /// Filter and edit-row state of the Sources view.
+    pub sources: SourcesView,
+    /// Edit-row state of the Categories view.
+    pub categories: CategoriesView,
     focus: FocusHandle,
 }
 
@@ -103,6 +110,8 @@ impl Workspace {
             tweaks_open: false,
             sources_intent: None,
             archive: ArchiveView::default(),
+            sources: SourcesView::default(),
+            categories: CategoriesView::default(),
             focus,
         }
     }
@@ -122,9 +131,25 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = AppModel::global(cx);
-        // The Archive selection lives only while its view is shown.
-        if entity.read(cx).model.prefs.view != View::Archive {
+        // Per-view state lives only while its view is shown (the JSX state
+        // dies with the unmounted component).
+        let shown = entity.read(cx).model.prefs.view;
+        if shown != View::Archive {
             self.archive.selected_id = None;
+        }
+        if shown != View::Categories {
+            self.categories = CategoriesView::default();
+        }
+        if shown == View::Sources {
+            // One-shot intent from the sidebar "+" / onboarding: open the add
+            // row if a category exists, and clear it either way.
+            if self.sources_intent.take() == Some(SourcesIntent::Add)
+                && !entity.read(cx).model.categories.is_empty()
+            {
+                self.sources.start_add(window, cx);
+            }
+        } else {
+            self.sources = SourcesView::default();
         }
         let app = entity.read(cx);
         let t = *theme::t(cx);
@@ -142,7 +167,7 @@ impl Render for Workspace {
                     .id("content")
                     .flex_1()
                     .overflow_y_scroll()
-                    .child(content(prefs.view, &self.archive, app, window, cx)),
+                    .child(content(prefs.view, self, app, window, cx)),
             );
         let tweaks = if self.tweaks_open {
             tweaks::panel(app, cx).into_any_element()
@@ -188,7 +213,7 @@ impl Render for Workspace {
 /// a later task (sources/categories 11, settings 12).
 fn content(
     view: View,
-    archive_view: &ArchiveView,
+    ws: &Workspace,
     app: &AppModel,
     window: &Window,
     cx: &Context<Workspace>,
@@ -196,7 +221,9 @@ fn content(
     match view {
         View::Briefing => briefing::render(app, window, cx),
         View::Saved => saved::render(app, window, cx),
-        View::Archive => archive::render(archive_view, app, window, cx),
+        View::Archive => archive::render(&ws.archive, app, window, cx),
+        View::Sources => sources::render(&ws.sources, app, cx),
+        View::Categories => categories::render(&ws.categories, app, cx),
         other => briefing::page_frame(header::view_title(other), []),
     }
 }
