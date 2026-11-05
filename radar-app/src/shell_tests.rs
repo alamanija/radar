@@ -115,6 +115,7 @@ pub(crate) fn article(id: u64, category: &str, read: bool) -> Article {
         url: format!("https://x.test/{id}"),
         image_url: None,
         summarized_by: None,
+        importance: None,
     }
 }
 

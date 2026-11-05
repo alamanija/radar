@@ -615,6 +615,7 @@ mod tests {
             url: "https://x.test/1".into(),
             image_url: None,
             summarized_by: None,
+            importance: None,
         }
     }
 

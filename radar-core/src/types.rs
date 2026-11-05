@@ -28,6 +28,11 @@ pub struct Article {
     /// so stored articles from before this field keep their exact shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summarized_by: Option<String>,
+    /// Claude's 1–5 score of how much the reader would want this today
+    /// (judged against the lens); `None` when not summarized or scored.
+    /// Top stories are the highest-scored new articles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub importance: Option<u8>,
 }
 
 /// The Claude model that summarizes and categorizes articles (prefs
@@ -411,6 +416,24 @@ mod tests {
         };
         let out = serde_json::to_value(&a).unwrap();
         assert_eq!(out["summarizedBy"], "claude-haiku-5-5");
+    }
+
+    #[test]
+    fn article_importance_is_optional_on_the_wire() {
+        let v = json!({
+            "id": 1, "title": "T", "source": "S", "sourceId": 1,
+            "category": "c", "categoryLabel": "C", "summary": "s",
+            "published": "now", "publishedAt": null, "read": false,
+            "bookmarked": false, "accent": "camel", "url": "u", "imageUrl": null
+        });
+        let a: Article = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(a.importance, None);
+        assert_eq!(serde_json::to_value(&a).unwrap(), v);
+        let a = Article {
+            importance: Some(4),
+            ..a
+        };
+        assert_eq!(serde_json::to_value(&a).unwrap()["importance"], 4);
     }
 
     #[test]

@@ -21,6 +21,8 @@ const MAX_RETRY_WAIT: Duration = Duration::from_secs(20);
 pub struct Summary {
     pub summary: String,
     pub category: String,
+    /// 1–5; `None` when the model returned a value outside that range.
+    pub importance: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +47,8 @@ enum ContentBlock {
 struct Parsed {
     summary: String,
     category: String,
+    #[serde(default)]
+    importance: i64,
 }
 
 /// `categories` must be non-empty — an empty JSON-schema `enum` is invalid and
@@ -124,7 +128,10 @@ fn system_prompt(categories: &[(String, String)], lens: Option<&str>) -> String 
          Given an article's source, title, and raw excerpt, return a JSON object:\n\
          - summary: 2-3 sentences, under 280 characters, in the voice of a journalist. \
          Do NOT restate the title. Lead with the most concrete detail.\n\
-         - category: exactly one ID from:\n{cat_list}{lens_block}\n\n\
+         - category: exactly one ID from:\n{cat_list}\n\
+         - importance: integer 1-5, how much this reader would want to read it today. \
+         5 = must-read, 3 = a typical item, 1 = skip. Judge against the Reader context \
+         when given; otherwise as a designer following the field.{lens_block}\n\n\
          Return only the JSON object."
     )
 }
@@ -146,9 +153,10 @@ fn request_body(model: SummaryModel, system: &str, user: &str, enum_values: &[St
                     "type": "object",
                     "properties": {
                         "summary": { "type": "string" },
-                        "category": { "type": "string", "enum": enum_values }
+                        "category": { "type": "string", "enum": enum_values },
+                        "importance": { "type": "integer", "enum": [1, 2, 3, 4, 5] }
                     },
-                    "required": ["summary", "category"],
+                    "required": ["summary", "category", "importance"],
                     "additionalProperties": false
                 }
             }
@@ -218,6 +226,9 @@ fn parse_completion(completion: Completion) -> Result<Summary, String> {
     Ok(Summary {
         summary: parsed.summary,
         category: parsed.category,
+        importance: (1..=5)
+            .contains(&parsed.importance)
+            .then_some(parsed.importance as u8),
     })
 }
 
@@ -274,9 +285,51 @@ mod tests {
     fn system_prompt_lists_categories_and_the_lens() {
         let p = system_prompt(&cats(), Some("  brand systems  "));
         assert!(p.contains("- packaging: Packaging design"));
-        assert!(p.contains("Reader context"));
+        assert!(p.contains("Reader context (lean into"));
         assert!(p.contains("brand systems"));
-        assert!(!system_prompt(&cats(), Some("  ")).contains("Reader context"));
+        assert!(!system_prompt(&cats(), Some("  ")).contains("Reader context (lean into"));
+    }
+
+    #[test]
+    fn body_requires_an_importance_score() {
+        let b = request_body(SummaryModel::Haiku55, "sys", "user", &["packaging".into()]);
+        let schema = &b["output_config"]["format"]["schema"];
+        assert_eq!(
+            schema["properties"]["importance"]["enum"],
+            json!([1, 2, 3, 4, 5])
+        );
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("importance")));
+    }
+
+    #[test]
+    fn system_prompt_explains_importance() {
+        let p = system_prompt(&cats(), None);
+        assert!(p.contains("importance"));
+        assert!(p.contains("5 = must-read"));
+    }
+
+    #[tokio::test]
+    async fn out_of_range_importance_keeps_the_summary() {
+        for (score, want) in [(9, None), (0, None), (4, Some(4))] {
+            let server = MockServer::start_async().await;
+            let text =
+                format!("{{\"summary\":\"S\",\"category\":\"packaging\",\"importance\":{score}}}");
+            server
+                .mock_async(|when, then| {
+                    when.method(POST).path("/v1/messages");
+                    then.status(200).json_body(json!({
+                        "content": [{"type": "text", "text": text}],
+                        "stop_reason": "end_turn"
+                    }));
+                })
+                .await;
+            let s = run(&server, SummaryModel::Haiku55).await.unwrap();
+            assert_eq!(s.summary, "S");
+            assert_eq!(s.importance, want, "score {score}");
+        }
     }
 
     #[tokio::test]

@@ -456,6 +456,7 @@ mod tests {
             url: format!("https://x.test/{id}"),
             image_url: image.then(|| format!("https://x.test/{id}.png")),
             summarized_by: None,
+            importance: None,
         };
         let source = |id: u32, category: &str, last: Option<i64>, health| Source {
             id,

@@ -474,6 +474,7 @@ impl RadarModel {
                     summary: a.summary.clone(),
                     category: a.category.clone(),
                     model: model.clone(),
+                    importance: a.importance,
                 });
             }
         }
@@ -548,6 +549,7 @@ mod tests {
             url: String::new(),
             image_url: None,
             summarized_by: None,
+            importance: None,
         }
     }
     fn src(id: u32, cat: &str, is_default: bool) -> Source {
@@ -782,7 +784,13 @@ mod tests {
             summarized_by: Some("claude-haiku-5-5".into()),
             ..art(id, 1)
         };
-        m.articles = vec![summarized(1, "current"), art(2, 1)];
+        m.articles = vec![
+            Article {
+                importance: Some(4),
+                ..summarized(1, "current")
+            },
+            art(2, 1),
+        ];
         m.archives = vec![Archive {
             id: 1,
             run_at: "2026-11-01T07:30:00.000Z".into(),
@@ -799,6 +807,8 @@ mod tests {
         ids.sort();
         assert_eq!(ids, [1, 3], "only summarized articles are known");
         assert_eq!(req.known[&1].summary, "current");
+        assert_eq!(req.known[&1].importance, Some(4));
+        assert_eq!(req.known[&3].importance, None);
         assert_eq!(req.known[&3].summary, "old");
         assert_eq!(req.known[&3].model, "claude-haiku-5-5");
     }

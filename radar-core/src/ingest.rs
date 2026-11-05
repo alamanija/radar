@@ -55,6 +55,8 @@ pub struct KnownSummary {
     pub category: String,
     /// Model id that wrote it.
     pub model: String,
+    /// Its 1–5 importance score, when it has one.
+    pub importance: Option<u8>,
 }
 
 /// Everything one briefing needs.
@@ -233,6 +235,7 @@ fn split_known(
                 a.category_label = label;
                 a.accent = accent;
                 a.summarized_by = Some(k.model.clone());
+                a.importance = k.importance;
                 reused.push(a);
             }
             None => todo.push(a),
@@ -269,6 +272,7 @@ async fn enhance(
             article.category_label = label;
             article.accent = accent;
             article.summarized_by = Some(model.id().to_string());
+            article.importance = s.importance;
             Ok(article)
         }
         Err(msg) => Err(Box::new((article, msg))),
@@ -344,6 +348,7 @@ async fn fetch_source(
                 url,
                 image_url,
                 summarized_by: None,
+                importance: None,
             })
         })
         .collect();
@@ -722,6 +727,7 @@ mod tests {
             url: format!("https://e.com/{id}"),
             image_url: None,
             summarized_by: None,
+            importance: None,
         }
     }
 
@@ -730,6 +736,7 @@ mod tests {
             summary: summary.into(),
             category: category.into(),
             model: "claude-haiku-5-5".into(),
+            importance: None,
         }
     }
 
@@ -741,7 +748,13 @@ mod tests {
             cat("branding", "Brand & Identity", "olive"),
         ]);
         let known = HashMap::from([
-            (1, known("Cached one.", "branding")),
+            (
+                1,
+                KnownSummary {
+                    importance: Some(5),
+                    ..known("Cached one.", "branding")
+                },
+            ),
             // Its category was deleted: summarize again.
             (2, known("Cached two.", "gone")),
         ]);
@@ -759,6 +772,7 @@ mod tests {
         assert_eq!(a.category_label, "Brand & Identity");
         assert_eq!(a.accent, "olive");
         assert_eq!(a.summarized_by.as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(a.importance, Some(5), "the score is reused too");
 
         let ids: Vec<u64> = todo.iter().map(|a| a.id).collect();
         assert_eq!(ids, [2, 3]);
