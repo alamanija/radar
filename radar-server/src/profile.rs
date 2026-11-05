@@ -12,17 +12,22 @@ use crate::etag::{etag_value, parse_if_match};
 use crate::state::AppState;
 use crate::types::{Profile, ProfileUpsert};
 
+#[allow(clippy::type_complexity)] // one-off sqlx row tuple
 pub async fn get_profile(
     State(state): State<AppState>,
     user: ClerkUser,
 ) -> AppResult<impl IntoResponse> {
-    let row: Option<(Option<String>, Option<String>, Option<String>, DateTime<Utc>)> =
-        sqlx::query_as(
-            "select name, role, lens, updated_at from profiles where clerk_user_id = $1",
-        )
-        .bind(&user.id)
-        .fetch_optional(&state.db)
-        .await?;
+    let row: Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "select name, role, lens, updated_at from profiles where clerk_user_id = $1",
+    )
+    .bind(&user.id)
+    .fetch_optional(&state.db)
+    .await?;
 
     let (name, role, lens, updated_at) = match row {
         Some(r) => r,
@@ -64,7 +69,12 @@ pub async fn put_profile(
         }
     }
 
-    let row: (Option<String>, Option<String>, Option<String>, DateTime<Utc>) = sqlx::query_as(
+    let row: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        DateTime<Utc>,
+    ) = sqlx::query_as(
         r#"
         insert into profiles (clerk_user_id, name, role, lens)
         values ($1, $2, $3, $4)

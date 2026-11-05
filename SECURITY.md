@@ -59,15 +59,15 @@ update if that happens rather than silence.
 
 Any of the following in the **latest release**:
 
-- **Client (Tauri desktop app)**
+- **Client (native GPUI desktop app)**
   - Anthropic API key handling (keyring storage, memory scrubbing,
     accidental logging)
-  - Clerk JWT handling (token leakage, misuse, CSRF in the auth flow)
+  - Clerk OAuth token handling (token leakage, misuse, CSRF in the auth flow)
   - Local storage / `radar.json` contents (any path that leaks data
     across user accounts or exposes secrets to unintended code)
   - Updater signature verification (anything that lets an attacker
     deliver an unsigned or incorrectly-signed update)
-  - Tauri IPC permissions and command handlers in `src-tauri/src/`
+  - The single-instance socket and OS integrations in `radar-app/src/`
   - RSS feed parsing / URL handling (SSRF, malformed-feed crashes)
 - **Server (`radar-server`)**
   - Authentication bypass, privilege escalation between Clerk users
@@ -79,13 +79,13 @@ Any of the following in the **latest release**:
 - **Build / supply chain**
   - Release workflow (`.github/workflows/release.yml`) — anything
     that lets a third party publish a signed release, tamper with
-    artifacts, or exfiltrate the Tauri signing key
+    artifacts, or exfiltrate the signing key
   - `render.yaml` / `Dockerfile` — secrets leakage, privilege issues
 
 ## What's Out of Scope
 
 - **Issues that require physical access to an unlocked device**, such
-  as reading the Tauri store or the user's keychain. The OS keychain
+  as reading the local `radar.json` store or the user's keychain. The OS keychain
   is considered trustworthy — if an attacker has already compromised
   the user's login session, Radar isn't the right threat model.
 - **Social engineering** of users or maintainers.

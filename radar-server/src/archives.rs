@@ -22,12 +22,11 @@ pub async fn get_archives(
     State(state): State<AppState>,
     user: ClerkUser,
 ) -> AppResult<impl IntoResponse> {
-    let row: Option<(serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-        "select archives, updated_at from user_archives where clerk_user_id = $1",
-    )
-    .bind(&user.id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(serde_json::Value, DateTime<Utc>)> =
+        sqlx::query_as("select archives, updated_at from user_archives where clerk_user_id = $1")
+            .bind(&user.id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match row {
         Some((archives, updated_at)) => {
@@ -115,9 +114,9 @@ fn validate_archives(value: &serde_json::Value) -> AppResult<()> {
     }
     let mut seen_ids = std::collections::HashSet::with_capacity(arr.len());
     for (i, entry) in arr.iter().enumerate() {
-        let obj = entry.as_object().ok_or_else(|| {
-            AppError::BadRequest(format!("archives[{i}] must be an object"))
-        })?;
+        let obj = entry
+            .as_object()
+            .ok_or_else(|| AppError::BadRequest(format!("archives[{i}] must be an object")))?;
         let id = obj
             .get("id")
             .ok_or_else(|| AppError::BadRequest(format!("archives[{i}] missing id")))?;
@@ -136,9 +135,7 @@ fn validate_archives(value: &serde_json::Value) -> AppResult<()> {
             )));
         }
         if obj.get("runAt").and_then(|v| v.as_str()).is_none() {
-            return Err(AppError::BadRequest(format!(
-                "archives[{i}] missing runAt"
-            )));
+            return Err(AppError::BadRequest(format!("archives[{i}] missing runAt")));
         }
     }
     Ok(())

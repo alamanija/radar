@@ -1,11 +1,6 @@
-node_modules/
-dist/
-dist-ssr/
 *.local
 
 target/
-src-tauri/target/
-src-tauri/gen/
 
 radar-server/.env
 .env
@@ -13,3 +8,6 @@ radar-server/.env
 .DS_Store
 .idea/
 .vscode/
+
+.superpowers/
+.claude/worktrees/

@@ -22,12 +22,11 @@ pub async fn get_sources(
     State(state): State<AppState>,
     user: ClerkUser,
 ) -> AppResult<impl IntoResponse> {
-    let row: Option<(serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-        "select sources, updated_at from user_sources where clerk_user_id = $1",
-    )
-    .bind(&user.id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(serde_json::Value, DateTime<Utc>)> =
+        sqlx::query_as("select sources, updated_at from user_sources where clerk_user_id = $1")
+            .bind(&user.id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match row {
         Some((value, updated_at)) => {
@@ -110,10 +109,15 @@ fn validate_sources(sources: &[Source]) -> AppResult<()> {
     let mut seen_ids = std::collections::HashSet::with_capacity(sources.len());
     for s in sources {
         if !seen_ids.insert(s.id) {
-            return Err(AppError::BadRequest(format!("duplicate source id: {}", s.id)));
+            return Err(AppError::BadRequest(format!(
+                "duplicate source id: {}",
+                s.id
+            )));
         }
         if s.name.is_empty() || s.name.len() > MAX_STRING_LEN {
-            return Err(AppError::BadRequest("source name: empty or too long".into()));
+            return Err(AppError::BadRequest(
+                "source name: empty or too long".into(),
+            ));
         }
         if s.category.len() > 128 {
             return Err(AppError::BadRequest("source category too long".into()));

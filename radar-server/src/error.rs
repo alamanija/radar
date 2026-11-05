@@ -52,7 +52,10 @@ impl IntoResponse for AppError {
             ),
             AppError::Db(e) => {
                 tracing::error!("db error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "database error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "database error".to_string(),
+                )
             }
             AppError::Http(e) => {
                 tracing::error!("upstream http error: {e}");
@@ -64,7 +67,10 @@ impl IntoResponse for AppError {
             }
             AppError::Internal(m) => {
                 tracing::error!("internal error: {m}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
         };
         (status, Json(json!({ "error": message }))).into_response()
