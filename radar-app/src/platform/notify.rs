@@ -58,7 +58,7 @@ mod tests {
 
     /// The test platform records notifications instead of posting them.
     #[gpui_kit::test]
-    fn briefing_ready_posts_the_js_copy(cx: &mut TestAppContext) {
+    fn briefing_ready_posts_the_expected_copy(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cx.set_app_identity("com.radar.test", "Radar");
             briefing_ready(cx, outcome(3, 10, 1));

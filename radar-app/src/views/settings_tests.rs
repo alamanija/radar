@@ -79,7 +79,7 @@ fn notifications(s: &Shell, cx: &mut TestAppContext) -> usize {
 }
 
 #[gpui_kit::test]
-fn settings_sections_follow_the_jsx(cx: &mut TestAppContext) {
+fn settings_sections_have_the_expected_titles(cx: &mut TestAppContext) {
     let s = settings(cx);
     assert_eq!(s.label(cx, "content-title").as_deref(), Some("Settings"));
     assert_eq!(

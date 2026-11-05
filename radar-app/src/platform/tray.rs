@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn status_is_unread_title_and_js_tooltip() {
+    fn status_is_unread_title_and_tooltip() {
         let mut m = RadarModel::default();
         assert_eq!(
             status(&m, 0),

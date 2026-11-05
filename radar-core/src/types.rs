@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn prefs_enums_use_js_strings() {
+    fn prefs_enums_use_the_stored_strings() {
         let p = Prefs {
             theme: Theme::Dark,
             view_mode: ViewMode::List,

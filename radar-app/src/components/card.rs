@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn initials_follow_the_jsx() {
+    fn initials_from_the_name() {
         assert_eq!(initials("Dezeen"), "D");
         assert_eq!(initials("It's Nice That"), "IN");
         assert_eq!(initials("A  B"), "AB");
