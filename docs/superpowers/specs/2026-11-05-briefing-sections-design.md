@@ -34,8 +34,14 @@ stored or synced; each device derives its own.
    device's later run can sit at `archives[0]` while the live articles
    came from this device's own run. Read/bookmark toggles change flags,
    not ids, so the match holds.
-2. **Earlier runs:** archive entries whose `runAt` is strictly older
-   than the live run's. Older runs from other devices count as seen.
+2. **Earlier runs:** archive entries more than 6 hours
+   (`SAME_BRIEFING_WINDOW_HOURS`) older than the live run. Runs closer
+   than that are part of the same briefing: another synced device firing
+   at the same scheduled slot, or a re-run the same morning. Older runs
+   from other devices count as seen. *(Amended after the branch review:
+   with "strictly older", two devices on the same synced schedule each
+   saw the other's run as earlier and collapsed the whole morning under
+   "Earlier".)*
 3. **New:** live ids that appear in no earlier run.
 4. **Fallback:** if no archive entry matches, every entry except
    `archives[0]` counts as earlier. With no live articles the set is

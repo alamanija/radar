@@ -38,6 +38,10 @@ pub struct CategoryPatch {
 pub const TOP_STORIES_MAX: usize = 3;
 /// Lowest importance score that qualifies as a top story.
 pub const TOP_STORY_MIN_IMPORTANCE: u8 = 4;
+/// Archive runs this close before the live run belong to the same briefing
+/// (another device's run at the same synced slot, a re-run that morning)
+/// and don't make its articles "earlier".
+pub const SAME_BRIEFING_WINDOW_HOURS: i64 = 6;
 
 /// A briefing split for display ([`RadarModel::briefing_sections`]).
 #[derive(Debug)]
@@ -416,11 +420,14 @@ impl RadarModel {
         }
     }
 
-    /// Live articles that appear in no earlier briefing run. The live run
-    /// is the newest archive entry with exactly the live article ids
-    /// (another device's later run may sit above it); earlier runs are the
-    /// entries older than it. Without such an entry, every entry but the
-    /// newest counts as earlier.
+    /// Live articles that appear in no earlier briefing. The live run is
+    /// the newest archive entry with exactly the live article ids (another
+    /// device's later run may sit above it). Earlier briefings are the
+    /// entries more than [`SAME_BRIEFING_WINDOW_HOURS`] older than it:
+    /// runs closer than that (another synced device on the same schedule,
+    /// or a re-run the same morning) are part of the same briefing.
+    /// Without a matching entry, every entry but the newest counts as
+    /// earlier.
     pub fn new_ids(&self) -> HashSet<u64> {
         let live: HashSet<u64> = self.articles.iter().map(|a| a.id).collect();
         if live.is_empty() {
@@ -430,10 +437,11 @@ impl RadarModel {
         let at = |a: &Archive| DateTime::parse_from_rfc3339(&a.run_at).ok();
         let earlier: Vec<&Archive> = match self.archives.iter().find(|a| ids(a) == live) {
             Some(run) => {
-                let run_at = at(run);
+                let cutoff =
+                    at(run).map(|t| t - chrono::Duration::hours(SAME_BRIEFING_WINDOW_HOURS));
                 self.archives
                     .iter()
-                    .filter(|a| !std::ptr::eq(*a, run) && at(a) < run_at)
+                    .filter(|a| !std::ptr::eq(*a, run) && at(a) < cutoff)
                     .collect()
             }
             None => self.archives.iter().skip(1).collect(),
@@ -719,7 +727,7 @@ mod tests {
         let out = m.finish_briefing(
             resp(vec![art(1, 1), art(2, 1)], vec![]),
             &HashSet::new(),
-            10,
+            7 * 3_600_000, // 7 h after that run: a later briefing
         );
         assert_eq!(out.new_count, 1);
         assert_eq!(out.total, 2);
@@ -1008,6 +1016,25 @@ mod tests {
             run(1, "2026-11-04T07:30:00.000Z", &[2]),
         ];
         assert_eq!(m.new_ids(), HashSet::from([1, 3]));
+    }
+
+    #[test]
+    fn runs_within_the_same_briefing_window_are_not_earlier() {
+        // Two synced devices on the same schedule: this device's run at
+        // 07:31 (live), the other's at 07:30, yesterday's at 07:30.
+        let mut m = model();
+        m.articles = vec![art(1, 1), art(2, 1), art(3, 1)];
+        m.archives = vec![
+            run(3, "2026-11-05T07:31:00.000Z", &[1, 2, 3]),
+            run(2, "2026-11-05T07:30:00.000Z", &[1, 2, 3]),
+            run(1, "2026-11-04T07:30:00.000Z", &[2]),
+        ];
+        assert_eq!(m.new_ids(), HashSet::from([1, 3]), "identical sets");
+
+        // The other device fetched one article fewer.
+        m.articles.push(art(4, 1));
+        m.archives[0] = run(3, "2026-11-05T07:31:00.000Z", &[1, 2, 3, 4]);
+        assert_eq!(m.new_ids(), HashSet::from([1, 3, 4]), "differing sets");
     }
 
     #[test]
