@@ -281,6 +281,10 @@ impl SyncResource for ArchivesRes {
         Self::from_remote(r, local)
     }
 
+    /// The union keeps every server archive, so an offline edit seeded from
+    /// an earlier run is pushed whatever the server holds now.
+    const OFFLINE_MERGE_UNIONS: bool = true;
+
     fn is_empty(xs: &Vec<Archive>) -> bool {
         xs.is_empty()
     }

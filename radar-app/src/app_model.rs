@@ -562,7 +562,11 @@ impl SaveJob {
     /// other way round: digests newer than the stored values would make a
     /// stale local copy look like an edit to push. A failed digest write
     /// leaves a file whose `saved` no longer matches the store, so the next
-    /// hydration seeds nothing from it for the changed resources.
+    /// hydration seeds nothing from it for the changed resources. It can
+    /// also leave an older pair that still matches (only a digest advanced,
+    /// as when a push landed): that pair pushes only if the server still
+    /// holds its last-synced value, which means the edit really never
+    /// landed (`SyncedResource::pull`).
     ///
     /// The `saved` digests are computed here, on the writer, not when the
     /// job is taken: archive keys run to megabytes.

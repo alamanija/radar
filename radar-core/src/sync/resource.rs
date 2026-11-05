@@ -20,7 +20,10 @@
 //!   store loaded cleanly and the loaded value is the one saved with it
 //!   (`LastSynced::checked`): any other local value (a damaged or replaced
 //!   store) would be pushed over the server's. An edit an earlier run never
-//!   got to the server then takes the same offline-edit path.
+//!   got to the server is then checked against the server by the first
+//!   pull: pushed if the server still holds the last-synced value, adopted
+//!   without a push if the server already holds it, and replaced by the
+//!   server's copy if the server changed to anything else since.
 //! - Route `DrainReport::succeeded` bodies whose key equals
 //!   [`SyncedResource::group_key`] to [`SyncedResource::on_drained`].
 
@@ -47,6 +50,12 @@ pub trait SyncResource {
     fn merge_offline(_remote: &Value, local: &Self::Local) -> Self::Local {
         local.clone()
     }
+    /// True when [`merge_offline`](Self::merge_offline) unions the server's
+    /// value into the local one (archives), so pushing it can't lose another
+    /// device's write. False (the default) when local replaces the server's
+    /// value; a baseline seeded from an earlier run then pushes only if the
+    /// server still holds the last-synced value (see [`SyncedResource::pull`]).
+    const OFFLINE_MERGE_UNIONS: bool = false;
 }
 
 /// Sync bookkeeping for one resource.
@@ -60,6 +69,11 @@ pub struct SyncedResource<R: SyncResource> {
     /// `stable_key(local)` at the first failed pull since the last success:
     /// the baseline for detecting edits made while the server was unreachable.
     pub failed_pull_key: Option<String>,
+    /// The persisted last-synced digest a seeded divergence came from
+    /// ([`seed_last_synced`](Self::seed_last_synced)): `Some` only while
+    /// `failed_pull_key` is that seeded sentinel. Kept by a failed pull,
+    /// cleared by a successful one.
+    pub seed_digest: Option<String>,
     _r: PhantomData<fn() -> R>,
 }
 
@@ -77,6 +91,7 @@ impl<R: SyncResource> std::fmt::Debug for SyncedResource<R> {
             .field("server_key", &self.server_key)
             .field("etag", &self.etag)
             .field("failed_pull_key", &self.failed_pull_key)
+            .field("seed_digest", &self.seed_digest)
             .finish()
     }
 }
@@ -88,6 +103,7 @@ impl<R: SyncResource> SyncedResource<R> {
             server_key: None,
             etag: None,
             failed_pull_key: None,
+            seed_digest: None,
             _r: PhantomData,
         }
     }
@@ -103,6 +119,7 @@ impl<R: SyncResource> SyncedResource<R> {
         self.server_key = None;
         self.etag = None;
         self.failed_pull_key = None;
+        self.seed_digest = None;
     }
 
     /// Pull on sign-in. Returns the value to store locally when the server
@@ -115,6 +132,17 @@ impl<R: SyncResource> SyncedResource<R> {
     /// that first failure, the offline edit wins: it is merged with
     /// [`SyncResource::merge_offline`] and pushed with the fresh etag, and the
     /// pushed value is returned.
+    ///
+    /// A divergence [seeded](Self::seed_last_synced) from an earlier run is
+    /// first checked against the server, unless the resource's offline merge
+    /// is a union ([`SyncResource::OFFLINE_MERGE_UNIONS`]):
+    /// - the server still holds the last-synced value: the edit never landed,
+    ///   so it is pushed as above;
+    /// - the server already holds the local value (the earlier run's push
+    ///   landed, but it never recorded that): it is adopted, with no PUT;
+    /// - the server holds anything else: another device wrote since, and
+    ///   this device can't tell that from a conflict with its own stuck
+    ///   edit, so the server's copy wins, as for a fresh pull.
     pub async fn pull(
         &mut self,
         client: &SyncClient,
@@ -130,6 +158,7 @@ impl<R: SyncResource> SyncedResource<R> {
         match self.pull_inner(client, local, diverged).await {
             Ok(out) => {
                 self.pulled = true;
+                self.seed_digest = None;
                 Ok(out)
             }
             Err(e) => {
@@ -148,6 +177,33 @@ impl<R: SyncResource> SyncedResource<R> {
         let out = match fetch::<R>(client).await? {
             Some(remote) if diverged => {
                 self.etag = updated_at(&remote);
+                // A baseline seeded from an earlier run, for a resource whose
+                // offline edit replaces the server's value: push only if the
+                // server is unchanged since that run last synced. This narrows
+                // the offline-edit rule for cross-restart baselines only (an
+                // in-session failed-pull baseline still pushes), matching a
+                // queued PUT that meets a 412 being dropped.
+                let seed = self
+                    .seed_digest
+                    .clone()
+                    .filter(|_| !R::OFFLINE_MERGE_UNIONS);
+                if let Some(seed) = seed {
+                    let next = R::from_remote(&remote, local);
+                    let remote_key = R::stable_key(&next);
+                    if key_digest(&remote_key) != seed {
+                        // Already local (the earlier push landed): adopt it.
+                        // Anything else: the server wins.
+                        if remote_key != R::stable_key(local) {
+                            log::warn!(
+                                "[sync] {} changed on the server since the last sync; \
+                                 keeping the server's copy over an unsynced local edit",
+                                R::ENDPOINT
+                            );
+                        }
+                        self.server_key = Some(remote_key);
+                        return Ok(Some(next));
+                    }
+                }
                 let mine = R::merge_offline(&remote, local);
                 // A 412 here (a write landed after our GET) falls back to
                 // push's refetch + from_remote merge.
@@ -231,8 +287,16 @@ impl<R: SyncResource> SyncedResource<R> {
     /// What the app persists so the next run can [seed](Self::seed_last_synced)
     /// the divergence baseline: the [`key_digest`] of the value last known to
     /// be on the server or, after a failed pull, of the baseline that pull
-    /// kept. `None` until either is known.
+    /// kept. A seeded baseline that hasn't pulled yet keeps the digest it was
+    /// seeded with ([`seed_digest`](Self::seed_digest)), so the next run can
+    /// still recognize the server's last-synced value. `None` until any of
+    /// them is known.
     pub fn last_synced_digest(&self) -> Option<String> {
+        if self.server_key.is_none() && self.failed_pull_key.as_deref() == Some(DIVERGED) {
+            if let Some(seed) = &self.seed_digest {
+                return Some(seed.clone());
+            }
+        }
         self.server_key
             .as_deref()
             .or(self.failed_pull_key.as_deref())
@@ -242,21 +306,22 @@ impl<R: SyncResource> SyncedResource<R> {
     /// Seeds the divergence baseline (`failed_pull_key`) with a digest an
     /// earlier run persisted from [`last_synced_digest`](Self::last_synced_digest).
     /// Call it before the first pull of a session. If `local` has changed
-    /// since that run last synced (an edit that never reached the server:
-    /// quit, crash, power loss), the pull takes the offline-edit path and
-    /// pushes it instead of taking the server's older copy. A baseline this
-    /// run already has is kept.
+    /// since that run last synced (an edit that may never have reached the
+    /// server: quit, crash, power loss), the pull takes the offline-edit path,
+    /// checked against the server as described on [`pull`](Self::pull). A
+    /// baseline this run already has is kept.
     pub fn seed_last_synced(&mut self, digest: &str, local: &R::Local) {
         if self.failed_pull_key.is_some() {
             return;
         }
         let key = R::stable_key(local);
-        self.failed_pull_key = Some(if key_digest(&key) == digest {
-            key
+        if key_digest(&key) == digest {
+            self.failed_pull_key = Some(key);
         } else {
             // The pre-edit key itself isn't persisted, only its digest.
-            DIVERGED.to_string()
-        });
+            self.failed_pull_key = Some(DIVERGED.to_string());
+            self.seed_digest = Some(digest.to_string());
+        }
     }
 
     /// A queued PUT for this resource landed (from `DrainReport::succeeded`).
@@ -692,6 +757,9 @@ mod tests {
         // forget the pre-edit baseline.
         let edited = profile("Bea");
         fail_pull(&server, &c, &mut r, &edited).await;
+        // An in-session baseline, not seeded from an earlier run: the edit
+        // still wins over the server's third value ("Srv").
+        assert_eq!(r.seed_digest, None);
 
         server
             .mock_async(|when, then| {
@@ -819,20 +887,152 @@ mod tests {
             .await
     }
 
+    /// `Srv` as [`srv_row_and_put`] serves it, once pulled.
+    fn srv() -> Profile {
+        Profile {
+            name: "Srv".into(),
+            role: String::new(),
+            lens: String::new(),
+        }
+    }
+
     #[tokio::test]
     async fn seeded_baseline_pushes_an_edit_made_since_the_last_sync() {
         let server = MockServer::start_async().await;
         let put =
             srv_row_and_put(&server, json!({"name": "Bea", "role": "AD", "lens": null})).await;
         let c = client(&server.base_url());
-        // An earlier run last synced "Ada"; "Bea" never reached the server.
+        // An earlier run last synced "Srv", which the server still holds;
+        // "Bea" never reached it.
         let mut r = SyncedResource::<ProfileRes>::new();
-        r.seed_last_synced(&digest_of(&profile("Ada")), &profile("Bea"));
+        r.seed_last_synced(&digest_of(&srv()), &profile("Bea"));
+        assert_eq!(r.seed_digest, Some(digest_of(&srv())));
         let got = r.pull(&c, &profile("Bea")).await.unwrap();
         put.assert_calls_async(1).await;
         assert_eq!(got, Some(profile("Bea")));
         assert!(r.pulled && !r.needs_push(&profile("Bea")));
         assert_eq!(r.etag.as_deref(), Some("t2"));
+        assert_eq!(r.seed_digest, None);
+    }
+
+    #[tokio::test]
+    async fn seeded_baseline_adopts_a_server_that_already_has_local() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/sync/profile");
+                then.status(200).json_body(
+                    json!({"name": "Bea", "role": "AD", "lens": null, "updatedAt": "t1"}),
+                );
+            })
+            .await;
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT).path("/sync/profile");
+                then.status(200).json_body(json!({}));
+            })
+            .await;
+        let c = client(&server.base_url());
+        // An earlier run last synced "Ada"; its push of "Bea" landed, but
+        // it never recorded that.
+        let mut r = SyncedResource::<ProfileRes>::new();
+        r.seed_last_synced(&digest_of(&profile("Ada")), &profile("Bea"));
+        let got = r.pull(&c, &profile("Bea")).await.unwrap();
+        put.assert_calls_async(0).await;
+        assert_eq!(got, Some(profile("Bea")));
+        assert_eq!(r.server_key, Some(ProfileRes::stable_key(&profile("Bea"))));
+        assert_eq!(r.etag.as_deref(), Some("t1"));
+        assert!(r.pulled && !r.needs_push(&profile("Bea")));
+        assert_eq!((r.failed_pull_key, r.seed_digest), (None, None));
+    }
+
+    #[tokio::test]
+    async fn seeded_baseline_keeps_a_server_value_changed_since_the_last_sync() {
+        let server = MockServer::start_async().await;
+        let put =
+            srv_row_and_put(&server, json!({"name": "Bea", "role": "AD", "lens": null})).await;
+        let c = client(&server.base_url());
+        // An earlier run last synced "Ada" and never got "Bea" to the
+        // server; another device has since written "Srv".
+        let mut r = SyncedResource::<ProfileRes>::new();
+        r.seed_last_synced(&digest_of(&profile("Ada")), &profile("Bea"));
+        let got = r.pull(&c, &profile("Bea")).await.unwrap();
+        put.assert_calls_async(0).await;
+        assert_eq!(got, Some(srv()), "the server's copy wins");
+        assert_eq!(r.server_key, Some(ProfileRes::stable_key(&srv())));
+        assert_eq!(r.etag.as_deref(), Some("t1"));
+        assert!(r.pulled && !r.needs_push(&srv()));
+        assert_eq!((r.failed_pull_key, r.seed_digest), (None, None));
+    }
+
+    #[tokio::test]
+    async fn seeded_archives_union_even_when_the_server_changed() {
+        let server = MockServer::start_async().await;
+        let c = client(&server.base_url());
+        let synced = vec![archive(1, "2026-11-01T08:00:00Z")];
+        let local = vec![
+            archive(2, "2026-11-04T08:00:00Z"),
+            archive(1, "2026-11-01T08:00:00Z"),
+        ];
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/sync/archives");
+                then.status(200).json_body(json!({
+                    "archives": [archive(3, "2026-11-03T08:00:00Z")], "updatedAt": "t1"
+                }));
+            })
+            .await;
+        let union = json!({"archives": [
+            archive(2, "2026-11-04T08:00:00Z"),
+            archive(3, "2026-11-03T08:00:00Z"),
+            archive(1, "2026-11-01T08:00:00Z"),
+        ]});
+        let put = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/sync/archives")
+                    .header("if-match", "W/\"t1\"")
+                    .json_body(union.clone());
+                let mut echo = union.clone();
+                echo["updatedAt"] = json!("t2");
+                then.status(200).json_body(echo);
+            })
+            .await;
+        let mut r = SyncedResource::<ArchivesRes>::new();
+        r.seed_last_synced(&key_digest(&ArchivesRes::stable_key(&synced)), &local);
+        let got = r.pull(&c, &local).await.unwrap().unwrap();
+        put.assert_calls_async(1).await;
+        assert_eq!(got.iter().map(|a| a.id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert!(!r.needs_push(&got));
+    }
+
+    #[tokio::test]
+    async fn last_synced_digest_is_the_seed_while_a_seeded_pull_fails() {
+        let server = MockServer::start_async().await;
+        let c = client(&server.base_url());
+        let mut r = SyncedResource::<ProfileRes>::new();
+        r.seed_last_synced(&digest_of(&srv()), &profile("Bea"));
+        fail_pull(&server, &c, &mut r, &profile("Bea")).await;
+        assert_eq!(r.last_synced_digest(), Some(digest_of(&srv())));
+        assert_eq!(r.seed_digest, Some(digest_of(&srv())), "kept");
+        assert_ne!(
+            r.failed_pull_key,
+            Some(ProfileRes::stable_key(&profile("Bea")))
+        );
+
+        // So the next run, seeded from it, still pushes over the unchanged
+        // server row; and the successful pull clears the seed.
+        let mut next_run = SyncedResource::<ProfileRes>::new();
+        next_run.seed_last_synced(&r.last_synced_digest().unwrap(), &profile("Bea"));
+        let put =
+            srv_row_and_put(&server, json!({"name": "Bea", "role": "AD", "lens": null})).await;
+        next_run.pull(&c, &profile("Bea")).await.unwrap();
+        put.assert_calls_async(1).await;
+        assert_eq!(next_run.seed_digest, None);
+        assert_eq!(
+            next_run.last_synced_digest(),
+            Some(digest_of(&profile("Bea")))
+        );
     }
 
     #[tokio::test]
@@ -906,9 +1106,10 @@ mod tests {
         r.server_key = Some("k".into());
         r.etag = Some("e".into());
         r.failed_pull_key = Some("f".into());
+        r.seed_digest = Some("s".into());
         r.reset();
         assert!(!r.pulled && r.server_key.is_none() && r.etag.is_none());
-        assert!(r.failed_pull_key.is_none());
+        assert!(r.failed_pull_key.is_none() && r.seed_digest.is_none());
         assert_eq!(
             SyncedResource::<ProfileRes>::group_key(),
             "PUT:/sync/profile"

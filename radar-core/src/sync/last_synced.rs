@@ -3,10 +3,17 @@
 //! `radar.json` keeps exactly the keys the Tauri app wrote.
 //!
 //! At the start of a sync session the digests seed each resource's
-//! divergence baseline ([`SyncedResource::seed_last_synced`]). An edit that
-//! never reached the server (the app quit before the push landed, crashed,
-//! lost power) is then pushed by the first pull instead of being replaced by
-//! the older server copy. Only the account that wrote the digests uses them.
+//! divergence baseline ([`SyncedResource::seed_last_synced`]). A local value
+//! that differs from its last-synced digest may be an edit that never
+//! reached the server (the app quit before the push landed, crashed, lost
+//! power), or one whose push landed without the app recording it (a quit
+//! push answered after shutdown). The first pull tells these apart by
+//! checking the server ([`SyncedResource::pull`]): it pushes the edit only
+//! if the server still holds the last-synced value, adopts the server's copy
+//! without a push if it already equals local, and otherwise keeps the
+//! server's copy, since another device wrote since. Archives, whose offline
+//! merge is a union, always push the union. Only the account that wrote the
+//! digests uses them.
 //!
 //! The file holds two digest sets, both written by the save job right after
 //! the store, from the same snapshot:
@@ -15,9 +22,10 @@
 //! - `saved`: per resource, the [`key_digest`] of the value that save wrote
 //!   to `radar.json` ([`snapshot_digests`]).
 //!
-//! A seed treats any local value that differs from `digests` as an unpushed
-//! edit and pushes it over the server's row, which every other device then
-//! pulls. That is only right when the local value is the one the app saved
+//! A seed treats any local value that differs from `digests` as a possible
+//! unpushed edit, and pushes it over the server's row (which every other
+//! device then pulls) when the server still holds the last-synced value.
+//! That is only right when the local value is the one the app saved
 //! alongside those digests. So at hydration ([`LastSynced::checked`]) a
 //! resource keeps its `digests` entry only when the store loaded cleanly and
 //! its loaded value matches its `saved` entry. Otherwise the entry is dropped
@@ -29,6 +37,7 @@
 //! format version.
 //!
 //! [`SyncedResource::seed_last_synced`]: super::resource::SyncedResource::seed_last_synced
+//! [`SyncedResource::pull`]: super::resource::SyncedResource::pull
 //! [`SyncedResource::last_synced_digest`]: super::resource::SyncedResource::last_synced_digest
 
 use super::resource::{key_digest, SyncResource};

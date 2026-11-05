@@ -1083,6 +1083,175 @@ fn stale_sidecar_takes_the_server_row(cx: &mut TestAppContext) {
     took_server_rows(&h, cx, &puts);
 }
 
+/// N1 re-review M2: damage to a key no digest covers (one malformed
+/// article) still makes the load not clean, and that alone stops the seed.
+/// Every resource matches `saved`, yet the unsynced edit is not pushed and
+/// local takes the server rows.
+#[gpui_kit::test]
+fn unclean_store_seeds_nothing_even_when_every_resource_matches(cx: &mut TestAppContext) {
+    use radar_core::sync::last_synced;
+    let server = MockServer::start();
+    let left = synced_then_unsynced_edit(cx, &server);
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&left.1).unwrap()).unwrap();
+    raw["articles"] = json!([{"id": "not an article"}]);
+    std::fs::write(&left.1, raw.to_string()).unwrap();
+    let loaded = store::load_checked(&left.1);
+    assert!(!loaded.clean);
+    let state = last_synced::load(&last_synced::path_beside(&left.1)).unwrap();
+    assert_eq!(
+        last_synced::snapshot_digests(&loaded.snap),
+        state.saved,
+        "only the articles key is damaged"
+    );
+
+    let puts = count_puts(&server, &ALL);
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    took_server_rows(&h, cx, &puts);
+}
+
+/// A server holding `row` for sources (etag `s1`) and nothing else.
+fn serve_sources(server: &MockServer, row: serde_json::Value) -> httpmock::Mock<'_> {
+    serve_empty_except(server, "/sync/sources");
+    server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200).json_body(stamped(row, "s1"));
+    })
+}
+
+/// P1: the quit push landed, but the process ended before it could record
+/// that. The server already holds the edit, so the relaunch adopts it
+/// without pushing it again.
+#[gpui_kit::test]
+fn landed_quit_push_is_adopted_on_relaunch(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let mut old_row = serve_sources(&server, sources_row(&["Dieline"]));
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    let left = edit_then_quit_unanswered(cx, h, &server);
+    let edit = assert_stuck_edit(&left.1);
+
+    old_row.delete();
+    server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200).json_body(stamped(edit.clone(), "s2"));
+    });
+    let puts = count_puts(&server, &["/sync/sources"]);
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    assert_eq!(puts[0].1.calls(), 0, "the edit is already on the server");
+    h.read(cx, |m| {
+        assert_eq!(SourcesRes::push_body(&m.model.sources), edit);
+        assert_eq!(m.resources.sources.etag.as_deref(), Some("s2"));
+        assert!(!m.resources.sources.needs_push(&m.model.sources));
+    });
+}
+
+/// P1: another device wrote sources after this device last synced them,
+/// and this device's quit push never landed. The server's newer row wins;
+/// the stuck edit is not pushed over it.
+#[gpui_kit::test]
+fn newer_server_row_wins_over_a_stuck_edit_on_relaunch(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let mut old_row = serve_sources(&server, sources_row(&["Dieline"]));
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    let left = edit_then_quit_unanswered(cx, h, &server);
+    assert_stuck_edit(&left.1);
+
+    old_row.delete();
+    let newer = sources_row(&["Dieline", "Other"]);
+    server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200).json_body(stamped(newer.clone(), "s2"));
+    });
+    let puts = count_puts(&server, &["/sync/sources"]);
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    assert_eq!(puts[0].1.calls(), 0, "the stuck edit overwrote a newer row");
+    h.read(cx, |m| {
+        assert_eq!(SourcesRes::push_body(&m.model.sources), newer);
+        assert_eq!(m.resources.sources.etag.as_deref(), Some("s2"));
+        assert!(!m.resources.sources.needs_push(&m.model.sources));
+    });
+}
+
+/// P1 step 3: a launch whose first pull fails keeps the last-synced digest
+/// it was seeded with, so the launch after it still recognizes the
+/// server's unchanged row and pushes the stuck edit.
+#[gpui_kit::test]
+fn failed_relaunch_keeps_the_seed_for_the_next_launch(cx: &mut TestAppContext) {
+    use radar_core::sync::last_synced;
+    let server = MockServer::start();
+    serve_sources(&server, sources_row(&["Dieline"]));
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    let (dir, path) = edit_then_quit_unanswered(cx, h, &server);
+    let edit = assert_stuck_edit(&path);
+    let sidecar = last_synced::path_beside(&path);
+    let seeded_from = last_synced::load(&sidecar).unwrap().digests.sources;
+
+    // Second launch: the server is down, so every pull fails. A per-device
+    // change (not synced) makes the quit flush rewrite the sidecar.
+    let down = MockServer::start();
+    let gets = down.mock(|when, then| {
+        when.method(GET);
+        then.status(503);
+    });
+    let p = path.clone();
+    let model = cx.update(|cx| AppModel::init(p, None, cx));
+    sign_in_as(&model, cx, &down.base_url(), "user_1", "at");
+    wait_until(cx, |cx| {
+        gets.calls() >= 6 && !model.read_with(cx, |m, _| m.resources_out)
+    });
+    assert!(!model.read_with(cx, |m, _| m.resources.sources.pulled));
+    model.update(cx, |m, cx| {
+        m.update_model(cx, |r| r.prefs.sidebar_collapsed = true)
+    });
+    drop(model.update(cx, |m, cx| m.flush_now(cx)));
+    let left = kill(
+        cx,
+        Host {
+            _dir: dir,
+            path,
+            model,
+        },
+    );
+    assert!(store::load(&left.1).prefs.sidebar_collapsed, "flushed");
+    assert_eq!(
+        last_synced::load(&sidecar).unwrap().digests.sources,
+        seeded_from,
+        "the failed launch kept the digest it was seeded with"
+    );
+
+    // Third launch: the server is back with the row last synced.
+    let put = server.mock(|when, then| {
+        when.method(PUT)
+            .path("/sync/sources")
+            .header("if-match", "W/\"s1\"")
+            .json_body(edit.clone());
+        then.status(200).json_body(stamped(edit.clone(), "s2"));
+    });
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    put.assert();
+    h.read(cx, |m| {
+        assert_eq!(SourcesRes::push_body(&m.model.sources), edit);
+        assert_eq!(m.resources.sources.etag.as_deref(), Some("s2"));
+    });
+}
+
+/// The store beside the sidecar holds an edit to sources the server never
+/// confirmed: `saved` describes it, the last-synced digest an older value.
+/// Returns the edit in the wire shape.
+fn assert_stuck_edit(store_path: &std::path::Path) -> serde_json::Value {
+    use radar_core::sync::last_synced;
+    let state = last_synced::load(&last_synced::path_beside(store_path)).expect("sidecar");
+    let snap = store::load(store_path);
+    assert_eq!(snap.sources.len(), 2);
+    assert_eq!(state.saved, last_synced::snapshot_digests(&snap));
+    assert!(state.digests.sources.is_some());
+    assert_ne!(state.digests.sources, state.saved.sources);
+    SourcesRes::push_body(&snap.sources)
+}
+
 /// M2: a toggle made while the article-states pull is in flight is newer
 /// than the server's copy and survives the pull; the server's rows still
 /// land for the articles nobody touched.
