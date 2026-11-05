@@ -681,6 +681,8 @@ impl AppModel {
         self.last_synced = Some(LastSynced {
             account_id,
             digests: seed,
+            // Set by each save from the snapshot it writes.
+            saved: Digests::default(),
         });
         let epoch = self.sync_epoch;
         let (changed_tx, mut changed_rx) = mpsc::unbounded::<()>();

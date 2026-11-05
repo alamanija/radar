@@ -222,15 +222,20 @@ impl Global for GlobalAppModel {}
 impl AppModel {
     /// Hydrates from `store_path`. Reads only; never writes the store.
     pub fn new(store_path: PathBuf, session: Option<Session>, _cx: &mut Context<Self>) -> Self {
-        let snap = store::load(&store_path);
+        let loaded = store::load_checked(&store_path);
+        let last_synced_path = last_synced::path_beside(&store_path);
+        // A resource seeds only when its hydrated value is the one saved
+        // with its digest (`LastSynced::checked`); edits after this point
+        // are real edits. Whose they are is checked when sync starts
+        // (`start_sync`).
+        let last_synced = last_synced::load(&last_synced_path)
+            .map(|state| state.checked(&last_synced::snapshot_digests(&loaded.snap), loaded.clean));
+        let snap = loaded.snap;
         let sync_queue = Arc::new(Mutex::new(PersistedQueue::new(snap.sync_queue.clone())));
         let model = RadarModel::from_snapshot(snap);
         // Startup only: nothing else uses the session yet, so this can't
         // wait on a keychain write.
         let account = session.as_ref().and_then(Session::account);
-        let last_synced_path = last_synced::path_beside(&store_path);
-        // Whose they are is checked when sync starts (`start_sync`).
-        let last_synced = last_synced::load(&last_synced_path);
         Self {
             model,
             session,
@@ -552,17 +557,26 @@ impl SaveJob {
         self.run_locked(&mut written)
     }
 
-    /// The store, then the last-synced digests taken with it. Never the
+    /// The store, then the last-synced digests taken with it, stamped with
+    /// the digests of what this job wrote to the store (`saved`). Never the
     /// other way round: digests newer than the stored values would make a
     /// stale local copy look like an edit to push. A failed digest write
-    /// only leaves older digests, which at worst re-push a synced value.
+    /// leaves a file whose `saved` no longer matches the store, so the next
+    /// hydration seeds nothing from it for the changed resources.
+    ///
+    /// The `saved` digests are computed here, on the writer, not when the
+    /// job is taken: archive keys run to megabytes.
     fn run_locked(&self, written: &mut u64) -> std::io::Result<()> {
         if self.generation <= *written {
             return Ok(());
         }
         store::save(&self.path, &self.snap)?;
         *written = self.generation;
-        if let Err(e) = last_synced::save(&self.last_synced_path, self.last_synced.as_ref()) {
+        let state = self.last_synced.as_ref().map(|s| LastSynced {
+            saved: last_synced::snapshot_digests(&self.snap),
+            ..s.clone()
+        });
+        if let Err(e) = last_synced::save(&self.last_synced_path, state.as_ref()) {
             log::warn!(
                 "[store] writing {} failed: {e}",
                 self.last_synced_path.display()

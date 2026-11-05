@@ -845,11 +845,242 @@ fn sign_out_removes_the_last_synced_file(cx: &mut TestAppContext) {
     let state = radar_core::sync::last_synced::load(&sidecar).expect("written with the store");
     assert_eq!(state.account_id, "user_1");
     assert!(state.digests.prefs.is_some());
+    assert_eq!(
+        state.saved,
+        radar_core::sync::last_synced::snapshot_digests(&store::load(&h.path)),
+        "saved: what the same save wrote to the store"
+    );
 
     h.model.update(cx, |m, cx| m.sign_out(cx));
     cx.executor().advance_clock(SAVE_DEBOUNCE);
     settle(cx);
     assert!(!sidecar.exists());
+}
+
+const ALL: [&str; 5] = [
+    "/sync/profile",
+    "/sync/categories",
+    "/sync/sources",
+    "/sync/prefs",
+    "/sync/archives",
+];
+
+/// The row the server holds for `path` (without `updatedAt`), and its etag.
+fn server_row(path: &str) -> (serde_json::Value, &'static str) {
+    use crate::workspace::shell_tests::article;
+    match path {
+        "/sync/profile" => (
+            json!({"name": "Ada", "role": "AD", "lens": "Packaging studio"}),
+            "pr1",
+        ),
+        "/sync/categories" => (
+            json!({"categories": [
+                {"id": "packaging", "label": "Packaging", "description": "Boxes.", "accent": "camel"}
+            ]}),
+            "c1",
+        ),
+        "/sync/sources" => (sources_row(&["Dieline"]), "s1"),
+        "/sync/prefs" => {
+            let prefs = Prefs {
+                theme: Theme::Dark,
+                ..Prefs::default()
+            };
+            (PrefsRes::push_body(&prefs), "pf1")
+        }
+        "/sync/archives" => {
+            let archive = Archive {
+                id: 1_767_261_000_000,
+                run_at: "2026-01-01T09:30:00.000Z".into(),
+                articles: vec![article(13_612_357_342_556_406_000, "packaging", false)],
+                errors: vec![],
+            };
+            (ArchivesRes::push_body(&vec![archive]), "a1")
+        }
+        other => panic!("no row for {other}"),
+    }
+}
+
+/// A server holding a row for every resource; a relaunch finds the same
+/// (old) rows again.
+fn serve_rows(server: &MockServer) {
+    for path in ALL {
+        let (row, etag) = server_row(path);
+        server.mock(|when, then| {
+            when.method(GET).path(path);
+            then.status(200).json_body(stamped(row, etag));
+        });
+    }
+    serve_states(server, json!([]));
+}
+
+/// Counts the PUTs each of `paths` receives.
+fn count_puts<'a>(
+    server: &'a MockServer,
+    paths: &[&'static str],
+) -> Vec<(&'static str, httpmock::Mock<'a>)> {
+    paths
+        .iter()
+        .map(|&path| {
+            let mock = server.mock(|when, then| {
+                when.method(PUT).path(path);
+                then.status(200).json_body(json!({}));
+            });
+            (path, mock)
+        })
+        .collect()
+}
+
+/// What the local model holds for `path`, in the server row's shape.
+fn local_row(m: &AppModel, path: &str) -> serde_json::Value {
+    use radar_core::sync::resources::ProfileRes;
+    match path {
+        "/sync/profile" => ProfileRes::push_body(&m.model.profile),
+        "/sync/categories" => CategoriesRes::push_body(&m.model.categories),
+        "/sync/sources" => SourcesRes::push_body(&m.model.sources),
+        "/sync/prefs" => PrefsRes::push_body(&m.model.prefs),
+        "/sync/archives" => ArchivesRes::push_body(&m.model.archives),
+        other => panic!("no resource at {other}"),
+    }
+}
+
+/// No PUT reached `paths`, and local holds the server's row for each.
+fn took_server_rows(
+    h: &Host,
+    cx: &mut TestAppContext,
+    puts: &[(&'static str, httpmock::Mock<'_>)],
+) {
+    let pushed: Vec<_> = puts
+        .iter()
+        .filter(|(_, put)| put.calls() > 0)
+        .map(|(path, put)| (*path, put.calls()))
+        .collect();
+    assert!(pushed.is_empty(), "pushed over the server: {pushed:?}");
+    for (path, _) in puts {
+        let local = h.read(cx, |m| local_row(m, path));
+        assert_eq!(local, server_row(path).0, "{path} kept the local copy");
+    }
+}
+
+/// Synced with a server holding every row, then quit with an unsynced
+/// source edit on disk (`edit_then_quit_unanswered`): a seed from what
+/// this leaves would diverge for sources.
+fn synced_then_unsynced_edit(cx: &mut TestAppContext, server: &MockServer) -> Leftover {
+    serve_rows(server);
+    let h = host(cx);
+    synced(&h, cx, server, "user_1");
+    let left = edit_then_quit_unanswered(cx, h, server);
+    assert_eq!(store::load(&left.1).sources.len(), 2);
+    assert_seeds_everything(&left.1);
+    left
+}
+
+/// The sidecar beside `store` would seed every resource: it holds synced
+/// and saved digests for all five, and the saved ones match the store.
+fn assert_seeds_everything(store_path: &std::path::Path) {
+    use radar_core::sync::last_synced;
+    let state = last_synced::load(&last_synced::path_beside(store_path)).expect("sidecar");
+    let loaded = store::load_checked(store_path);
+    let saved = last_synced::snapshot_digests(&loaded.snap);
+    assert_eq!(state.saved, saved);
+    let kept = state.checked(&saved, loaded.clean);
+    for d in [
+        &kept.digests.profile,
+        &kept.digests.categories,
+        &kept.digests.sources,
+        &kept.digests.prefs,
+        &kept.digests.archives,
+    ] {
+        assert!(d.is_some(), "{:?}", kept.digests);
+    }
+}
+
+/// N1: `radar.json` is gone while `sync-state.json` stayed. The empty
+/// store isn't what the digests were saved with, so nothing seeds: every
+/// resource takes the server row, and nothing empty is pushed over it.
+#[gpui_kit::test]
+fn deleted_store_never_pushes_over_the_server(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let left = synced_then_unsynced_edit(cx, &server);
+    std::fs::remove_file(&left.1).unwrap();
+    assert!(radar_core::sync::last_synced::path_beside(&left.1).exists());
+
+    let puts = count_puts(&server, &ALL);
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    took_server_rows(&h, cx, &puts);
+}
+
+/// N1: an unparseable `radar.json` loads as defaults; those are not an
+/// edit to push.
+#[gpui_kit::test]
+fn unparseable_store_never_pushes_over_the_server(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let left = synced_then_unsynced_edit(cx, &server);
+    std::fs::write(&left.1, "{not json").unwrap();
+
+    let puts = count_puts(&server, &ALL);
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    took_server_rows(&h, cx, &puts);
+}
+
+/// N1: another writer (a Tauri downgrade) replaced one resource in
+/// `radar.json` with a different valid value. That resource takes the
+/// server row; an untouched resource's unsynced edit, still exactly what
+/// was saved, is pushed as before.
+#[gpui_kit::test]
+fn externally_replaced_value_takes_the_server_row(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let left = synced_then_unsynced_edit(cx, &server);
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&left.1).unwrap()).unwrap();
+    raw["profile"] = json!({"name": "Tauri", "role": "Old", "lens": ""});
+    std::fs::write(&left.1, raw.to_string()).unwrap();
+    let local_sources = SourcesRes::push_body(&store::load(&left.1).sources);
+
+    let others = count_puts(
+        &server,
+        &[
+            "/sync/profile",
+            "/sync/categories",
+            "/sync/prefs",
+            "/sync/archives",
+        ],
+    );
+    let sources_put = server.mock(|when, then| {
+        when.method(PUT)
+            .path("/sync/sources")
+            .header("if-match", "W/\"s1\"")
+            .json_body(local_sources.clone());
+        then.status(200)
+            .json_body(stamped(local_sources.clone(), "s2"));
+    });
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    took_server_rows(&h, cx, &others);
+    sources_put.assert();
+    h.read(cx, |m| {
+        assert_eq!(m.model.sources.len(), 2, "the saved edit was pushed");
+        assert_eq!(m.resources.sources.etag.as_deref(), Some("s2"));
+    });
+}
+
+/// N1: the store write landed but the sidecar write didn't, so
+/// `sync-state.json` describes an older save. The changed resource takes
+/// the server row instead of being pushed on the strength of stale digests.
+#[gpui_kit::test]
+fn stale_sidecar_takes_the_server_row(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_rows(&server);
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    assert_seeds_everything(&h.path);
+    let sidecar = radar_core::sync::last_synced::path_beside(&h.path);
+    let older = std::fs::read(&sidecar).unwrap();
+    let left = edit_then_quit_unanswered(cx, h, &server);
+    assert_eq!(store::load(&left.1).sources.len(), 2);
+    std::fs::write(&sidecar, older).unwrap();
+
+    let puts = count_puts(&server, &ALL);
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    took_server_rows(&h, cx, &puts);
 }
 
 /// M2: a toggle made while the article-states pull is in flight is newer

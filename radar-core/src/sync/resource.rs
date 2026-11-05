@@ -13,11 +13,14 @@
 //!   the successful pull pushes them instead of taking the server's copy.
 //! - Call `reset` on sign-out / account switch, then `pull` for the new
 //!   account.
-//! - Persist [`SyncedResource::last_synced_digest`] per account (with the
-//!   local value it describes; see `super::last_synced`) and, before a
-//!   session's first pull, seed it back with
-//!   [`SyncedResource::seed_last_synced`]. An edit an earlier run never got
-//!   to the server then takes the same offline-edit path.
+//! - Persist [`SyncedResource::last_synced_digest`] per account, together
+//!   with the digest of the local value the same store save wrote (see
+//!   `super::last_synced`). Before a session's first pull, seed it back with
+//!   [`SyncedResource::seed_last_synced`], but only after checking that the
+//!   store loaded cleanly and the loaded value is the one saved with it
+//!   (`LastSynced::checked`): any other local value (a damaged or replaced
+//!   store) would be pushed over the server's. An edit an earlier run never
+//!   got to the server then takes the same offline-edit path.
 //! - Route `DrainReport::succeeded` bodies whose key equals
 //!   [`SyncedResource::group_key`] to [`SyncedResource::on_drained`].
 

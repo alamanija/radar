@@ -109,16 +109,39 @@ fn read_map(path: &Path) -> Read {
     }
 }
 
+/// A loaded store, and whether it loaded cleanly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    pub snap: Snapshot,
+    /// The file was read and parsed as an object, and nothing in it was
+    /// dropped or defaulted for being malformed. A missing file is not
+    /// clean: nothing proves the defaults are what was last saved.
+    pub clean: bool,
+}
+
+/// The store at `path`; see [`load_checked`] for whether it loaded cleanly.
 pub fn load(path: &Path) -> Snapshot {
+    load_checked(path).snap
+}
+
+/// Loads the store at `path`. A missing, unreadable or unparseable file
+/// yields the defaults (the last two are backed up first); a malformed key
+/// or array item is defaulted or skipped, and the original is backed up.
+/// [`Loaded::clean`] reports whether any of that happened.
+pub fn load_checked(path: &Path) -> Loaded {
+    let defaults = || Loaded {
+        snap: Snapshot::default(),
+        clean: false,
+    };
     let map = match read_map(path) {
         Read::Map(m) => m,
-        Read::Missing => return Snapshot::default(),
+        Read::Missing => return defaults(),
         Read::Unreadable(e) => {
             log::warn!("[store] cannot read {}: {e}", path.display());
             if let Err(be) = backup_copy(path, "corrupt") {
                 log::warn!("[store] backup of unreadable store failed: {be}");
             }
-            return Snapshot::default();
+            return defaults();
         }
         Read::Unparseable => {
             let mut name = path.as_os_str().to_owned();
@@ -128,7 +151,7 @@ pub fn load(path: &Path) -> Snapshot {
                 Ok(()) => log::warn!("[store] corrupt store moved to {}", backup.display()),
                 Err(e) => log::warn!("[store] corrupt store, backup failed: {e}"),
             }
-            return Snapshot::default();
+            return defaults();
         }
     };
     let mut dropped = false;
@@ -164,7 +187,10 @@ pub fn load(path: &Path) -> Snapshot {
             Err(e) => log::warn!("[store] data dropped on load and backup failed: {e}"),
         }
     }
-    snap
+    Loaded {
+        snap,
+        clean: !dropped,
+    }
 }
 
 pub fn save(path: &Path, snap: &Snapshot) -> io::Result<()> {
@@ -416,6 +442,60 @@ mod tests {
         let s = load(&p);
         assert!(s.sources.is_empty());
         assert!(s.categories.is_empty());
+    }
+
+    #[test]
+    fn load_checked_is_clean_for_a_well_formed_file() {
+        let fx = load_checked(&fixture());
+        assert!(fx.clean, "the Tauri fixture");
+        assert_eq!(fx.snap, load(&fixture()));
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("radar.json");
+        save(&p, &fx.snap).unwrap();
+        assert_eq!(
+            load_checked(&p),
+            Loaded {
+                snap: fx.snap,
+                clean: true
+            }
+        );
+        fs::write(&p, "{}").unwrap();
+        assert!(load_checked(&p).clean, "absent keys are not malformed");
+    }
+
+    #[test]
+    fn load_checked_is_not_clean_when_anything_was_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("radar.json");
+        let not_clean = |p: &Path, what: &str| {
+            let l = load_checked(p);
+            assert!(!l.clean, "{what} loaded as clean");
+            l.snap
+        };
+
+        assert_eq!(
+            not_clean(&dir.path().join("nope.json"), "a missing file"),
+            Snapshot::default()
+        );
+        fs::write(&p, "{not json").unwrap();
+        assert_eq!(not_clean(&p, "unparseable text"), Snapshot::default());
+        fs::write(&p, "[]").unwrap();
+        assert_eq!(not_clean(&p, "a non-object"), Snapshot::default());
+        fs::write(&p, [0xff, 0xfe, b'{']).unwrap();
+        assert_eq!(not_clean(&p, "an unreadable file"), Snapshot::default());
+
+        let good = json!({"id": 1, "runAt": "2026-01-01T00:00:00Z", "articles": [], "errors": []});
+        fs::write(&p, json!({"archives": [good, {"id": "x"}]}).to_string()).unwrap();
+        assert_eq!(not_clean(&p, "a dropped array item").archives.len(), 1);
+        fs::write(
+            &p,
+            json!({"sources": "oops", "profile": {"name": "Z"}}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(not_clean(&p, "a malformed key").profile.name, "Z");
+        fs::write(&p, json!({"prefs": 5}).to_string()).unwrap();
+        not_clean(&p, "a malformed object key");
     }
 
     #[test]
