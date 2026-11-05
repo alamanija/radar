@@ -1,6 +1,6 @@
-//! Pieces shared by the Sources and Categories pages: the `.pill` button,
+//! Pieces shared by the Sources and Categories pages: the pill button,
 //! the bordered table block, the edit-row frame, the error line and the
-//! text input styled like `sourcesStyles.input`.
+//! text input.
 
 use crate::components::icon::{Icon, IconName};
 use crate::theme::{self, Tokens};
@@ -17,24 +17,23 @@ use gpui_kit::{
 
 pub type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-/// How a `.pill` is painted.
+/// How a [`Pill`] is painted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PillStyle {
-    /// `.pill`.
+    /// Surface fill, text-2 label; hover: strong border, `text` label.
     Plain,
-    /// `.pill.active`.
+    /// Selected: `text` fill, `bg` label, no hover change.
     Active,
-    /// Inline `background: var(--text); color: var(--bg)`: the "Add ..."
-    /// buttons. The inline style also beats the `:hover` rule.
+    /// `text` fill, `bg` label: the "Add ..." buttons. No hover change.
     Primary,
-    /// Inline `color: var(--dot-rust)`: Delete.
+    /// Rust-dot label: Delete.
     Danger,
 }
 
-/// A `.pill` button. `on_click: None` is a `disabled` button: it looks the
-/// same (the CSS has no `:disabled` rule) but does nothing. `title` is the
-/// HTML `title` attribute: a hover tooltip, also exposed as the accessible
-/// description (`aria_description`) so it can be observed in tests.
+/// A pill button. `on_click: None` is a disabled button: it looks the
+/// same (there is no disabled style) but does nothing. `title` is a hover
+/// tooltip, also exposed as the accessible description
+/// (`aria_description`) so it can be observed in tests.
 pub struct Pill {
     pub id: ElementId,
     pub label: SharedString,
@@ -193,7 +192,7 @@ pub fn edit_frame(t: &Tokens, last: bool) -> Div {
     }
 }
 
-/// `{ fontSize: 11, color: var(--dot-rust), marginTop: 8 }`.
+/// An 11 px error message in the rust dot color, 8 px below its field.
 pub fn error_line(id: &'static str, text: String, t: &Tokens) -> impl IntoElement {
     div()
         .id(id)
@@ -205,7 +204,7 @@ pub fn error_line(id: &'static str, text: String, t: &Tokens) -> impl IntoElemen
         .child(text)
 }
 
-/// Text size of `sourcesStyles.input` / `select`.
+/// Text size of [`text_input`] and the selects.
 pub const INPUT_TEXT: f32 = 13.;
 
 /// A new single-line input with `placeholder` and `value`.
@@ -223,8 +222,8 @@ pub fn new_input(
     })
 }
 
-/// `sourcesStyles.input`: 28 px high, 8 px padding, 1 px border,
-/// `--radius`, surface fill, 13 px text (`mono`: 12 px JetBrains Mono).
+/// A text input: 28 px high, 8 px padding, 1 px border, `radius`, surface
+/// fill, 13 px text (`mono`: 12 px JetBrains Mono).
 pub fn text_input(
     id: &'static str,
     label: &'static str,

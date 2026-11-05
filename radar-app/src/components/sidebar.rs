@@ -1,4 +1,4 @@
-//! Port of `src/components/Sidebar.jsx`: brand, view nav with counts,
+//! The sidebar: brand, view nav with counts,
 //! category filters, the first sources, the sync indicator (signed in only)
 //! and the profile footer.
 
@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 use radar_core::types::View;
 
-/// `.app`'s `--sidebar-w` when expanded (collapsed is 0: not rendered).
+/// Sidebar width when expanded (collapsed is 0: not rendered).
 pub const WIDTH: f32 = 260.;
 /// The sidebar lists this many sources, then "View all".
 const SOURCES_SHOWN: usize = 8;
@@ -217,7 +217,7 @@ fn brand(t: &Tokens) -> Div {
         )
 }
 
-/// `sidebarStyles.section` (with the `marginTop: 18` every use adds).
+/// A section label (with the 18 px top margin every use adds).
 fn section(label: &str, t: &Tokens) -> Div {
     div()
         .mt(px(18.))
@@ -239,7 +239,7 @@ enum Lead {
     Dot(Option<Hsla>),
 }
 
-/// `SidebarItem`. The count, when present, gets the id `<id>-count` and
+/// One nav item. The count, when present, gets the id `<id>-count` and
 /// its value as accessible label.
 fn item(
     id: SharedString,
@@ -292,7 +292,7 @@ fn item(
     }
 }
 
-/// `sidebarStyles.sourceRow`.
+/// One row of the sources list.
 fn source_row(id: SharedString, t: &Tokens) -> Stateful<Div> {
     div()
         .id(id)

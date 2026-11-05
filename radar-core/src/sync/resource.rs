@@ -1,5 +1,4 @@
-//! Full-list synced resource state machine. Port of
-//! `src/hooks/useSyncedResource.js`.
+//! Full-list synced resource state machine.
 //!
 //! The app owns the value and the 800 ms debounce: it calls [`SyncedResource::pull`]
 //! on sign-in, and when [`SyncedResource::needs_push`] is true after an edit
@@ -127,8 +126,8 @@ impl<R: SyncResource> SyncedResource<R> {
     /// has one. A 404 with a non-empty local seeds the server (no If-Match).
     ///
     /// On error `pulled` stays false so pushes remain gated until a pull
-    /// succeeds (the JS set `pulled` even on failure, which let a later push
-    /// without If-Match overwrite server data it never saw), and the local
+    /// succeeds (setting `pulled` on failure would let a later push without
+    /// If-Match overwrite server data it never saw), and the local
     /// key is recorded. If a later pull finds the local value changed since
     /// that first failure, the offline edit wins: it is merged with
     /// [`SyncResource::merge_offline`] and pushed with the fresh etag, and the

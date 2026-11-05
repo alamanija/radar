@@ -1022,9 +1022,9 @@ fn unparseable_store_never_pushes_over_the_server(cx: &mut TestAppContext) {
     took_server_rows(&h, cx, &puts);
 }
 
-/// N1: another writer (a Tauri downgrade) replaced one resource in
-/// `radar.json` with a different valid value. That resource takes the
-/// server row; an untouched resource's unsynced edit, still exactly what
+/// N1: another writer (an older build after a downgrade) replaced one
+/// resource in `radar.json` with a different valid value. That resource
+/// takes the server row; an untouched resource's unsynced edit, still exactly what
 /// was saved, is pushed as before.
 #[gpui_kit::test]
 fn externally_replaced_value_takes_the_server_row(cx: &mut TestAppContext) {
@@ -1032,7 +1032,7 @@ fn externally_replaced_value_takes_the_server_row(cx: &mut TestAppContext) {
     let left = synced_then_unsynced_edit(cx, &server);
     let mut raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&left.1).unwrap()).unwrap();
-    raw["profile"] = json!({"name": "Tauri", "role": "Old", "lens": ""});
+    raw["profile"] = json!({"name": "Older", "role": "Old", "lens": ""});
     std::fs::write(&left.1, raw.to_string()).unwrap();
     let local_sources = SourcesRes::push_body(&store::load(&left.1).sources);
 

@@ -1,4 +1,4 @@
-//! Port of `src/views/CategoriesView.jsx`: the category list with inline
+//! The category list with inline
 //! add and edit rows, accent swatches, and delete blocked while sources
 //! still use the category.
 //!
@@ -23,7 +23,7 @@ use gpui_kit::{
 use radar_core::model::CategoryPatch;
 use radar_core::types::Category;
 
-/// `ACCENTS`: the swatches, in order.
+/// The accent swatches, in order.
 pub const ACCENTS: [&str; 6] = ["olive", "rust", "slate", "plum", "sand", "ink"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +55,7 @@ fn source_count(app: &AppModel, category: &str) -> usize {
 }
 
 impl CategoriesView {
-    /// `startAdd` / `startEdit`: opens the edit row, replacing any open one.
+    /// Opens the add or edit row, replacing any open one.
     pub fn open(&mut self, target: Target, window: &mut Window, cx: &mut Context<Workspace>) {
         let (label, description, accent) = match &target {
             Target::New => (String::new(), String::new(), "olive".to_string()),
@@ -82,8 +82,8 @@ impl CategoriesView {
         cx.notify();
     }
 
-    /// `attemptSave`. ("Pick an accent" cannot happen here: the draft
-    /// always holds one of the six swatches.)
+    /// Validates and saves the open row. (A missing accent cannot happen:
+    /// the draft always holds one of the six swatches.)
     fn save(&mut self, cx: &mut Context<Workspace>) {
         let Some(ed) = self.editing.as_mut() else {
             return;
@@ -114,7 +114,7 @@ impl CategoriesView {
         cx.notify();
     }
 
-    /// `handleDelete`: refused while sources use the category.
+    /// Deletes the edited category; refused while sources use it.
     fn delete(&mut self, cx: &mut Context<Workspace>) {
         let Some(Target::Category(id)) = self.editing.as_ref().map(|e| e.target.clone()) else {
             return;
@@ -259,8 +259,8 @@ fn category_row(
     )
 }
 
-/// `Swatches`: 24 px circles; the selected one gets a 2 px surface gap and
-/// a 3 px text ring, the others a 1 px border ring.
+/// The accent swatches: 24 px circles; the selected one gets a 2 px
+/// surface gap and a 3 px text ring, the others a 1 px border ring.
 fn swatches(selected: &str, t: &Tokens, cx: &Context<Workspace>) -> impl IntoElement {
     div().flex().gap(px(6.)).children(ACCENTS.map(|a| {
         let is_sel = a == selected;

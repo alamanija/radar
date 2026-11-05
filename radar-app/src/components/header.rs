@@ -1,4 +1,4 @@
-//! Port of `src/components/Header.jsx`: sidebar toggle, the view title,
+//! The header: sidebar toggle, the view title,
 //! search bar, grid/list control and briefing button (briefing view only),
 //! and the theme toggle.
 
@@ -14,8 +14,7 @@ use gpui_kit::{
 };
 use radar_core::types::{Theme, View, ViewMode};
 
-/// The header title of each view (`labels` in `Header.jsx`, which has no
-/// entry for Categories).
+/// The header title of each view.
 pub fn view_title(view: View) -> &'static str {
     match view {
         View::Briefing => "Morning Briefing",
@@ -215,7 +214,7 @@ pub fn render(app: &AppModel, cx: &Context<Workspace>) -> impl IntoElement {
         )
 }
 
-/// `headerStyles.kbd`.
+/// A keyboard-shortcut badge.
 pub(crate) fn kbd(text: &'static str, t: &Tokens) -> Div {
     div()
         .ml_auto()

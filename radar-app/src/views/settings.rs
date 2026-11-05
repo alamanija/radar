@@ -1,10 +1,9 @@
-//! Port of `src/views/SettingsView.jsx`: Account, Profile, Briefing,
-//! Curation, Appearance, Updates and Integrations, in that order, with the
-//! JSX copy.
+//! The settings page: Account, Profile, Briefing, Curation, Appearance,
+//! Updates and Integrations, in that order.
 //!
 //! # State
 //! [`SettingsView`] lives on the `Workspace` and is dropped whenever another
-//! view is shown, as the JSX controls' state died on unmount. On show,
+//! view is shown, so control state never outlives the view. On show,
 //! [`SettingsView::prepare`] builds the inputs, reads the API key status
 //! (keychain) and the login-item state (the model's autostart backend),
 //! both off the UI thread, and keeps the controlled inputs (name, role,
@@ -15,11 +14,11 @@
 //! sits in its masked input until Save, then goes straight to the keychain
 //! on the blocking pool, and the input is dropped once that succeeds.
 //!
-//! # Differences from the JSX
-//! - Clerk's `<SignInButton>`/`<UserButton>` become the browser sign-in
-//!   pill and an avatar with a "Sign out" pill.
-//! - `<input type="time">` is the kit `TimeField`; the lens `<textarea>` is
-//!   the kit `Textarea`.
+//! # Controls
+//! - Account: the browser sign-in pill, or an avatar with a "Sign out"
+//!   pill.
+//! - The schedule time is the kit `TimeField`; the lens is the kit
+//!   `Textarea`.
 
 use super::briefing::{page_frame, view_subtitle};
 use super::form::{block, new_input, text_input, Pill, PillStyle};
@@ -48,9 +47,9 @@ const SUBTITLE: &str = "Radar runs locally by default. Sign in to sync your sour
                         categories, profile, and read state across devices.";
 const LENS_PLACEHOLDER: &str = "e.g. Brand studio founder focused on packaging and editorial \
                                 illustration. Prefer craft over trend.";
-/// `settingsStyles.wrap` max width.
+/// Page max width.
 const MAX_WIDTH: f32 = 880.;
-/// 13 px Inter at `line-height: normal`.
+/// 13 px Inter at its natural line height.
 const LENS_LINE_HEIGHT: f32 = 15.75;
 /// The lens editor's `width: 100%; maxWidth: 420` as the browser resolves
 /// it on the 880 px page: the 420 px basis shrinks with the label column
@@ -68,10 +67,10 @@ pub struct Form {
     pub name: Entity<InputState>,
     pub role: Entity<InputState>,
     pub schedule: Entity<TimeFieldState>,
-    /// The lens textarea while editing (`LensControl`).
+    /// The lens textarea while editing.
     pub lens: Option<Entity<TextareaState>>,
     pub api: ApiKey,
-    /// Login-item state as the OS last reported it (`AutostartToggle`);
+    /// Login-item state as the OS last reported it;
     /// off until the first read lands.
     pub autostart: bool,
     /// A read or a set of the login item is in flight; the toggle ignores
@@ -100,7 +99,7 @@ enum Field {
     Role,
 }
 
-/// `ApiKeyControl`'s state. Only the status, never the key.
+/// The API key control's state. Only the status, never the key.
 #[derive(Default)]
 pub struct ApiKey {
     pub present: bool,
@@ -372,7 +371,7 @@ impl SettingsView {
         }
     }
 
-    /// `AutostartToggle`: sets the login item to `want` (if any), then
+    /// The open-at-login toggle: sets the login item to `want` (if any), then
     /// shows what the OS reports. The OS owns the state, so the toggle never
     /// flips a local copy. The I/O runs on the blocking pool.
     fn refresh_autostart(&mut self, want: Option<bool>, cx: &mut Context<Workspace>) {
@@ -413,7 +412,7 @@ fn labeled(id: String, text: SharedString) -> impl Styled + IntoElement {
         .child(text)
 }
 
-/// `blockHead`: surface-2 header with the 13/500 title and the 12 px sub.
+/// A block header: surface-2, with the 13/500 title and the 12 px sub.
 fn head(i: usize, title: &'static str, sub: &'static str, t: &Tokens) -> Div {
     div()
         .flex()
@@ -449,7 +448,7 @@ fn section(
         .into_any_element()
 }
 
-/// `row(label, sub, control)` / `settingRow`.
+/// One setting: label and optional sub on the left, control on the right.
 fn row(
     key: &'static str,
     label: impl Into<SharedString>,
@@ -547,7 +546,7 @@ fn avatar(account: &Account, t: &Tokens) -> AnyElement {
     }
 }
 
-/// `AccountControl`: sign-in pill, or who is signed in plus Sign out.
+/// The account control: sign-in pill, or who is signed in plus Sign out.
 fn account_control(app: &AppModel, t: &Tokens) -> AnyElement {
     if let Some(account) = &app.account {
         let who = div()
@@ -581,9 +580,8 @@ fn account_control(app: &AppModel, t: &Tokens) -> AnyElement {
             .into_any_element();
     }
     if app.signing_in {
-        // The browser flow is running (JSX: the "Loading auth…" state). The
-        // JSX's Clerk modal could be dismissed; Cancel is the native way out
-        // of an abandoned browser tab.
+        // The browser flow is running: "Loading auth…", with Cancel as the
+        // way out of an abandoned browser tab.
         let cancel = Pill::new("settings-sign-in-cancel", "Cancel")
             .on_click(|_, _, cx| AppModel::global(cx).update(cx, |m, cx| m.cancel_sign_in(cx)))
             .render(t, []);
@@ -667,7 +665,7 @@ fn lens_control(f: &Form, lens: &str, t: &Tokens, cx: &Context<Workspace>) -> An
         .with_size(Size::Size(px(13. / 0.875)))
         .aria_label("Professional lens")
         .w_full()
-        // CSS `padding: 8px 10px`, less the kit's own multi-line editor
+        // 8/10 px padding, less the kit's own multi-line editor
         // padding (8 px horizontal, 2 px vertical).
         .px(px(2.))
         .py(px(6.))
@@ -677,7 +675,7 @@ fn lens_control(f: &Form, lens: &str, t: &Tokens, cx: &Context<Workspace>) -> An
         .text_color(t.text)
         .font_family(theme::FONT_SANS)
         .text_size(px(13.))
-        // A `<textarea>` keeps the UA `line-height: normal` (Inter: ~1.21).
+        // Inter's natural line height (~1.21).
         .line_height(px(LENS_LINE_HEIGHT));
     let draft = state.clone();
     let save = Pill::new("settings-lens-save", "Save")
@@ -789,7 +787,7 @@ fn choice<T: Copy + PartialEq + 'static>(
     .render(t, [])
 }
 
-/// `UpdatesControl`: one control per updater state.
+/// The updates control: one control per updater state.
 fn updates_control(state: &updater::State, t: &Tokens) -> AnyElement {
     let act = |f: fn(&mut AppModel, &mut Context<AppModel>)| {
         move |_: &_, _: &mut Window, cx: &mut App| {

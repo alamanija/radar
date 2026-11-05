@@ -1,9 +1,9 @@
-//! Loading placeholders (`SkeletonCard` in `Card.jsx` and the inline
-//! skeleton rows of `BriefingView.jsx`).
+//! Loading placeholders: skeleton cards and the briefing list's skeleton
+//! rows.
 //!
-//! The CSS `.skel` shimmers a 3-stop gradient with `background-position`.
-//! GPUI gradients have two stops and no background scrolling, so the bars
-//! pulse between `--surface-2` and `--border` over the same 1.4 s instead.
+//! GPUI gradients have two stops and no background scrolling, so rather
+//! than a moving shimmer the bars pulse between `surface_2` and `border`
+//! over 1.4 s.
 
 use crate::theme::{self, Tokens};
 use gpui_kit::base::TestSupportExt as _;
@@ -21,7 +21,7 @@ fn mix(a: Hsla, b: Hsla, d: f32) -> Hsla {
     gpui_kit::hsla(l(a.h, b.h), l(a.s, b.s), l(a.l, b.l), l(a.a, b.a))
 }
 
-/// One `.skel` bar. `w`/`h` in px; `w = None` fills the width.
+/// One skeleton bar. `w`/`h` in px; `w = None` fills the width.
 fn skel(id: SharedString, t: &Tokens, w: Option<f32>, h: f32, radius: f32) -> AnyElement {
     let (from, to) = (t.surface_2, t.border);
     let bar = div()
@@ -61,7 +61,7 @@ fn skel_pct(id: SharedString, t: &Tokens, pct: f32, h: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// `SkeletonCard`.
+/// A placeholder grid card.
 #[derive(IntoElement)]
 pub struct SkeletonCard {
     index: usize,

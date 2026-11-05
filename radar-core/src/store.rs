@@ -1,6 +1,6 @@
-//! JSON store compatible with the `radar.json` file written by Tauri's
-//! `@tauri-apps/plugin-store`: a single top-level object whose keys are the
-//! store keys and whose values are exactly what the JS frontend stored.
+//! JSON store for `radar.json`: a single top-level object whose keys are the
+//! store keys. Its shape is exactly what earlier releases wrote, so installs
+//! upgraded from them read their old file.
 
 use crate::types::{Archive, Article, Category, Prefs, Profile, Source};
 use serde::de::DeserializeOwned;
@@ -21,7 +21,7 @@ pub struct Snapshot {
     pub archives: Vec<Archive>,
     pub categories: Vec<Category>,
     pub profile: Profile,
-    /// Offline sync queue items, kept opaque (JS shape) for round-tripping.
+    /// Offline sync queue items, kept opaque (stored shape) for round-tripping.
     pub sync_queue: Vec<Value>,
 }
 
@@ -248,11 +248,11 @@ mod tests {
     use std::fs;
 
     fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tauri_radar.json")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_store.json")
     }
 
     #[test]
-    fn loads_tauri_era_file() {
+    fn loads_legacy_store_file() {
         let s = load(&fixture());
         assert_eq!(s.sources.len(), 2);
         assert_eq!(s.articles.len(), 2);
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(s.prefs.schedule_time, "08:15");
         assert!(s.prefs.schedule_enabled);
         assert_eq!(s.archives[0].run_at, "2026-01-01T09:30:00.000Z");
-        // 19-digit ids as the webview rounded and wrote them.
+        // 19-digit ids as earlier releases rounded and wrote them.
         assert_eq!(s.articles[0].id, 13_612_357_342_556_406_000);
         assert!(s.articles[0].bookmarked);
         assert_eq!(s.archives[0].articles[0].id, s.articles[0].id);
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn load_checked_is_clean_for_a_well_formed_file() {
         let fx = load_checked(&fixture());
-        assert!(fx.clean, "the Tauri fixture");
+        assert!(fx.clean, "the legacy fixture");
         assert_eq!(fx.snap, load(&fixture()));
 
         let dir = tempfile::tempdir().unwrap();

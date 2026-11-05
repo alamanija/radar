@@ -556,6 +556,6 @@ fn leaving_the_view_discards_the_open_row(cx: &mut TestAppContext) {
     show(&s, cx, View::Sources);
     assert!(
         !s.exists(cx, "source-edit-name"),
-        "JSX state dies on unmount"
+        "the edit row does not outlive the view"
     );
 }

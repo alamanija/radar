@@ -1,5 +1,5 @@
-//! Visual tokens (port of `src/styles.css` + `ACCENTS` in `src/App.jsx`) and
-//! their projection onto the gpui-kit `Theme`.
+//! Visual tokens (colors, metrics, accents) and their projection onto the
+//! gpui-kit `Theme`.
 //!
 //! Views read colors and metrics from [`t`]; gpui-kit components read the
 //! mapped subset through `cx.theme()`. Both are refreshed together by
@@ -13,12 +13,12 @@ use std::sync::Arc;
 
 /// UI family (name inside `assets/fonts/Inter-Variable.ttf`).
 pub const FONT_SANS: &str = "Inter";
-/// Headline serif (`.serif` in `styles.css`).
+/// Headline serif.
 pub const FONT_SERIF: &str = "Newsreader";
-/// Mono family (`.mono` in `styles.css`).
+/// Mono family.
 pub const FONT_MONO: &str = "JetBrains Mono";
 
-/// Every color and metric token of `styles.css` that views need.
+/// Every color and metric token that views need.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
     pub bg: Hsla,
@@ -42,12 +42,12 @@ pub struct Tokens {
 
 impl Global for Tokens {}
 
-/// Category accent names, in [`Tokens::dot`] order (the `.dot-*` classes).
+/// Category accent names, in [`Tokens::dot`] order.
 pub const DOT_NAMES: [&str; 6] = ["olive", "rust", "slate", "plum", "sand", "ink"];
 
 impl Tokens {
-    /// `.dot-<name>`. An unknown name has no class in the CSS, so it paints
-    /// nothing; `None` here.
+    /// The dot color of an accent name. An unknown name paints nothing:
+    /// `None`.
     pub fn dot_for(&self, name: &str) -> Option<Hsla> {
         DOT_NAMES
             .iter()
@@ -56,8 +56,8 @@ impl Tokens {
     }
 }
 
-/// `font-feature-settings: 'cv11', 'ss01'` from the `body` rule, which
-/// every element inherits; `tabular` adds `tnum` (`tabular-nums`). GPUI
+/// The OpenType features `cv11` and `ss01`, which all text uses; `tabular`
+/// adds `tnum` (tabular figures). GPUI
 /// replaces rather than merges features, so set the full list.
 pub fn font_features(tabular: bool) -> FontFeatures {
     let mut tags = vec![("cv11".to_string(), 1), ("ss01".to_string(), 1)];
@@ -75,8 +75,8 @@ fn black(alpha: f32) -> Hsla {
     gpui_kit::hsla(0., 0., 0., alpha)
 }
 
-/// The accent swatch color shown in Tweaks (`light` / `dark` in
-/// `Tweaks.jsx`), i.e. the accent itself in that theme.
+/// The accent swatch color shown in Tweaks: the accent itself in that
+/// theme.
 pub fn accent_swatch(accent: Accent, theme: Theme) -> Hsla {
     let [l, d, ..] = accent_hex(accent);
     hex(match theme {
@@ -85,8 +85,8 @@ pub fn accent_swatch(accent: Accent, theme: Theme) -> Hsla {
     })
 }
 
-/// `--shadow-md`. A CSS blur of B px is a Gaussian sigma of B/2, which is
-/// what GPUI's `blur_radius` means.
+/// The medium shadow. A CSS blur of B px is a Gaussian sigma of B/2, which
+/// is what GPUI's `blur_radius` means.
 pub fn shadow_md(theme: Theme) -> Vec<BoxShadow> {
     let (near, far) = match theme {
         Theme::Light => (0.04, 0.04),
@@ -119,7 +119,8 @@ pub fn ring(width: f32, color: Hsla, inset: bool) -> BoxShadow {
     }
 }
 
-/// `ACCENTS[name]` from `App.jsx`: `(l, d, sl, sd, tl, td)`.
+/// An accent's colors as `(l, d, sl, sd, tl, td)`: accent, soft and text,
+/// each for light and dark.
 fn accent_hex(accent: Accent) -> [u32; 6] {
     match accent {
         Accent::Camel => [0x9A7B5B, 0xC4A882, 0xEEE5D8, 0x2A2419, 0x6B5338, 0xD9BE93],
@@ -130,9 +131,8 @@ fn accent_hex(accent: Accent) -> [u32; 6] {
     }
 }
 
-/// Tokens for one theme/accent/density combination. Values are verbatim
-/// from `src/styles.css` (`:root`, `[data-theme="dark"]`,
-/// `[data-density="compact"]`) and `ACCENTS` in `src/App.jsx`.
+/// Tokens for one theme/accent/density combination: the theme's palette,
+/// the density's row metrics and the accent's colors.
 pub fn tokens(theme: Theme, accent: Accent, density: Density) -> Tokens {
     let [l, d, sl, sd, tl, td] = accent_hex(accent);
     let (accent, accent_soft, accent_text) = match theme {
@@ -207,7 +207,7 @@ pub fn apply(cx: &mut App, prefs: &Prefs) {
         th.primary_foreground = tk.surface;
         th.ring = tk.accent;
         // The kit paints a highlighted list row (the search palette's
-        // selected result) with `accent`: the prototype's `--accent-soft`.
+        // selected result) with `accent`; it gets the soft accent.
         th.accent = tk.accent_soft;
         th.accent_foreground = tk.accent_text;
         th.muted_foreground = tk.text_2;

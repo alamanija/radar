@@ -121,7 +121,7 @@ fn settings_sections_follow_the_jsx(cx: &mut TestAppContext) {
     click(&s, cx, "settings-gmail-connect");
     assert_eq!(s.read(cx, |m| m.model.prefs.view), View::Settings);
 
-    // Lens: "Add" while empty, then a 4-row textarea with the JSX placeholder.
+    // Lens: "Add" while empty, then a 4-row textarea with its placeholder.
     assert_eq!(s.label(cx, "settings-lens-edit").as_deref(), Some("Add"));
     click(&s, cx, "settings-lens-edit");
     let lens =

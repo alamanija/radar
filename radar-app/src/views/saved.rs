@@ -1,4 +1,4 @@
-//! Port of `src/views/SavedView.jsx`: the bookmarked articles of the
+//! The bookmarked articles of the
 //! current briefing as a card grid. Cards are live (toggles change the
 //! model) and scoped `saved` so their element ids never collide with the
 //! briefing's.

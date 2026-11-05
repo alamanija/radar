@@ -1,11 +1,9 @@
 //! Briefings that start on their own: the daily slot, run-at-launch, and
-//! the OS wake entry that relaunches Radar for the slot. Ports
-//! `src-tauri/src/scheduler.rs` and the run-at-launch and schedule-wake
-//! effects of `App.jsx`.
+//! the OS wake entry that relaunches Radar for the slot.
 //!
 //! Every briefing goes through [`AppModel::run_briefing`], which persists
-//! the result itself, so the Tauri scheduler's separate store-writing path
-//! is gone. All of this runs with no window open.
+//! the result itself, so there is no separate store-writing path here. All
+//! of this runs with no window open.
 
 use crate::app_model::AppModel;
 use crate::bridge;
@@ -49,7 +47,7 @@ impl State {
     }
 
     /// Hands changed schedule prefs to `wake` on the blocking pool, in
-    /// order (`App.jsx:431-441`). An unparsable time removes the entry.
+    /// order. An unparsable time removes the entry.
     pub fn sync_wake(&mut self, prefs: &Prefs, wake: &WakeFn, cx: &mut App) {
         let key = (prefs.schedule_enabled, prefs.schedule_time.clone());
         if self.wake_synced.as_ref() == Some(&key) {
@@ -111,7 +109,7 @@ fn tick(m: &mut AppModel, cx: &mut Context<AppModel>) {
     m.run_briefing(cx);
 }
 
-/// Run-at-launch (`App.jsx` `launchFired`): decided once per process,
+/// Run-at-launch: decided once per process,
 /// once the model is ready. It fires when the pref is on and a source can
 /// be fetched.
 pub fn run_at_launch(cx: &mut App) {
@@ -226,8 +224,8 @@ mod tests {
         assert_eq!(fakes.runs(), 1);
     }
 
-    /// Like the Tauri scheduler: no fetchable source, no run (it would only
-    /// clear the briefing); the next tick looks again.
+    /// No fetchable source, no run (it would only clear the briefing); the
+    /// next tick looks again.
     #[gpui_kit::test]
     fn scheduler_waits_for_a_usable_source(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -323,8 +321,7 @@ mod tests {
             "only schedule changes sync, in order"
         );
 
-        // Hooks installed on a ready model sync once with the hydrated prefs
-        // (the JS effect's first run).
+        // Hooks installed on a ready model sync once with the hydrated prefs.
         let fresh = Fakes::default();
         model.update(cx, |m, cx| {
             m.set_hooks(fresh.hooks(Vec::new(), at(9, 0)), cx)

@@ -1,5 +1,5 @@
-//! Port of `src/components/Tweaks.jsx` and the Tweaks FAB in `App.jsx`:
-//! a floating panel of visual prefs, bottom-right.
+//! The Tweaks panel and its FAB: a floating panel of visual prefs,
+//! bottom-right.
 
 use super::icon::{Icon, IconName};
 use super::icon_button;
@@ -233,7 +233,7 @@ fn group(label: &str, control: impl IntoElement, t: &Tokens) -> Div {
         .child(control)
 }
 
-/// `Seg`: a two-option segmented control.
+/// A two-option segmented control.
 fn seg(
     t: &Tokens,
     options: [(&'static str, &'static str, Option<IconName>, bool, Setter); 2],

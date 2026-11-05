@@ -1,13 +1,13 @@
-//! App updates. Port of `src/hooks/useUpdater.js` onto `cargo-packager-updater`.
+//! App updates through `cargo-packager-updater`.
 //!
 //! The manifest is the `latest.json` of the GitHub release
 //! ([`ENDPOINT`]); artifacts are verified against the minisign public key
-//! the Tauri build already ships ([`PUBKEY`]), so installed Tauri builds and
+//! earlier releases already ship ([`PUBKEY`]), so installed older builds and
 //! this app trust the same signatures. See `scripts/make-latest-json.sh` for
 //! the manifest shape.
 //!
 //! # States
-//! [`State`] is the `useUpdater` machine. [`AppModel::check_for_updates`],
+//! [`State`] is the update state machine. [`AppModel::check_for_updates`],
 //! [`download_update`](AppModel::download_update) and
 //! [`restart_to_apply`](AppModel::restart_to_apply) drive it; all network and
 //! install work runs on the blocking pool through a [`Backend`], which tests
@@ -33,11 +33,11 @@ use std::sync::Mutex;
 /// Release manifest; `latest` resolves to the newest published release.
 pub const ENDPOINT: &str =
     "https://github.com/alamanija/radar/releases/latest/download/latest.json";
-/// The minisign public key from `src-tauri/tauri.conf.json`
-/// (`plugins.updater.pubkey`), unchanged.
+/// The release-signing minisign public key, unchanged since earlier
+/// releases (installed older builds verify updates against it too).
 pub const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM2N0JFNUNDOEVDRUQwOTMKUldTVDBNNk96T1Y3eGs1ODJHVkxjdko0RCtDVmdFT1FGUnNCR1FoMENzaW51Nk5MRDVQVno3QysK";
 
-/// Where the update flow stands (the `useUpdater` states).
+/// Where the update flow stands.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum State {
     /// Nothing in flight.
@@ -113,8 +113,9 @@ struct Pending {
 }
 
 impl Packager {
-    /// Manifest key of this platform. Tauri names macOS `darwin`; the
-    /// packager crate's own spelling is `macos`.
+    /// Manifest key of this platform. The manifest names macOS `darwin` (the
+    /// key older installed builds' updater reads); the packager crate's own
+    /// spelling is `macos`.
     pub fn platform_key() -> String {
         cargo_packager_updater::target()
             .map(|t| t.replacen("macos-", "darwin-", 1))
@@ -607,9 +608,10 @@ mod tests {
             .unwrap()
     }
 
-    /// `latest.json` must stay readable by already-installed Tauri updaters
-    /// (`version`, `notes`, `pub_date`, `platforms.<os>-<arch>.{signature,url}`)
-    /// and by cargo-packager-updater (which also wants `format`).
+    /// `latest.json` must stay readable by updaters in already-installed
+    /// older builds (`version`, `notes`, `pub_date`,
+    /// `platforms.<os>-<arch>.{signature,url}`) and by cargo-packager-updater
+    /// (which also wants `format`).
     #[test]
     fn latest_json_shape() {
         let dir = tempfile::tempdir().unwrap();

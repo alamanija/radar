@@ -1,4 +1,4 @@
-//! Search palette semantics (port of `SearchPalette.jsx`).
+//! Search palette semantics.
 
 use crate::types::{Archive, Article, Source};
 use std::collections::HashSet;

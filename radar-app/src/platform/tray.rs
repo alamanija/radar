@@ -1,5 +1,4 @@
-//! Tray / menu-bar icon. Ports `src-tauri/src/tray.rs` (icon and menu) and
-//! `src/tray.js` (status).
+//! Tray / menu-bar icon: icon, menu and status.
 //!
 //! - The menu is static: "Show Radar", "Run briefing now", a separator,
 //!   "Quit Radar". Left-click toggles the main window; right-click opens
@@ -68,7 +67,7 @@ fn command_for_menu(id: &str) -> Option<Command> {
     }
 }
 
-/// The left button's release toggles the window (as in Tauri).
+/// The left button's release toggles the window.
 fn command_for_click(event: &TrayIconEvent) -> Option<Command> {
     matches!(
         event,
@@ -85,7 +84,7 @@ fn command_for_click(event: &TrayIconEvent) -> Option<Command> {
 pub type Status = (Option<String>, String);
 
 /// The menu-bar title (unread count, or none) and the hover tooltip for
-/// `m`: `pushTrayStatus` in `src/tray.js`.
+/// `m`.
 pub fn status(m: &RadarModel, now_ms: i64) -> Status {
     let unread = m.unread_count();
     let tooltip = text::tray_tooltip(unread, m.last_run_at_ms(), &m.articles, now_ms);
@@ -297,7 +296,7 @@ mod tests {
     use tray_icon::{MouseButton, MouseButtonState, Rect, TrayIconId};
 
     #[test]
-    fn menu_has_the_tauri_labels_and_commands() {
+    fn menu_has_the_expected_labels_and_commands() {
         let labels: Vec<_> = MENU.iter().map(|(_, label)| *label).collect();
         assert_eq!(labels, ["Show Radar", "Run briefing now", "Quit Radar"]);
         let commands: Vec<_> = MENU.iter().map(|(id, _)| command_for_menu(id)).collect();

@@ -1,6 +1,5 @@
 //! The window's root view: sidebar, header, routed content and the
-//! floating layers (Tweaks FAB/panel, search). Port of the layout in
-//! `App.jsx`.
+//! floating layers (Tweaks FAB/panel, search).
 //!
 //! # Pattern for later tasks
 //! - Views read the global [`AppModel`] and change it with
@@ -107,7 +106,7 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&AppModel::global(cx), |_, _, cx| cx.notify())
             .detach();
-        // Coming back to the window drains the sync queue (JS: `online`).
+        // Coming back to the window drains the sync queue.
         cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() {
                 AppModel::global(cx).update(cx, |m, _| m.drain_now());
@@ -149,8 +148,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = AppModel::global(cx);
-        // Per-view state lives only while its view is shown (the JSX state
-        // dies with the unmounted component).
+        // Per-view state lives only while its view is shown.
         let shown = entity.read(cx).model.prefs.view;
         if shown != View::Archive {
             self.archive.selected_id = None;

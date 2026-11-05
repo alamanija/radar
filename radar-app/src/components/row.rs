@@ -1,9 +1,9 @@
-//! Port of `Row` from `src/components/Card.jsx`: one article as a list
-//! row. Same event model as [`Card`](super::card::Card).
+//! One article as a list row. Same event model as
+//! [`Card`](super::card::Card).
 //!
-//! The CSS grid `20px 160px 1fr 120px 80px 60px` (gap 14) is a flex row with
-//! the same fixed widths; [`HEAD_COLS`] is shared with the list header of
-//! the briefing view.
+//! The columns (20, 160, flexible, 120, 80 and 60 px; gap 14) are a flex
+//! row; [`Col`], [`cell`] and [`grid_row`] are shared with the list header
+//! of the briefing view.
 
 use super::card::{apply_event, CardEvent, CardHandler};
 use super::icon::IconName;
@@ -49,7 +49,7 @@ pub fn cell(col: Col) -> Div {
     }
 }
 
-/// The row-shaped flex container (padding and gap of `rowStyles.row`).
+/// The row-shaped flex container (the row's padding and gap).
 pub fn grid_row() -> Div {
     div().flex().items_center().px(px(16.)).gap(px(GAP))
 }
@@ -70,7 +70,7 @@ impl Row {
         }
     }
 
-    #[allow(dead_code)] // Archive (Task 10) routes events through its own handler
+    #[allow(dead_code)] // The archive view routes events through its own handler
     pub fn on_event(mut self, f: impl Fn(CardEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_event = Some(Rc::new(f));
         self

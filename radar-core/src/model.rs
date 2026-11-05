@@ -1,5 +1,5 @@
-//! UI-free application state and its mutations. Ports of the state logic in
-//! `src/App.jsx`. No IO and no clocks: time is always a parameter.
+//! UI-free application state and its mutations. No IO and no clocks: time
+//! is always a parameter.
 
 use crate::ingest::{CategoryInput, SourceInput};
 use crate::store::Snapshot;
@@ -399,8 +399,8 @@ impl RadarModel {
             .map(|d| d.timestamp_millis())
     }
 
-    /// Port of the `profileName` expression: profile name, else account name,
-    /// else the local part of the account email.
+    /// Profile name, else account name, else the local part of the account
+    /// email.
     pub fn display_name(&self, account: Option<&Account>) -> String {
         let p = self.profile.name.trim();
         if !p.is_empty() {

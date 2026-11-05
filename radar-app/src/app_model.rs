@@ -1,5 +1,5 @@
 //! The global application model: one `Entity<AppModel>` owns all mutable
-//! state (port of the state that lived in `App.jsx`) and persists it.
+//! state and persists it.
 //!
 //! # Pattern for later tasks
 //! - Get the entity anywhere with [`AppModel::global`]; views `cx.observe`
@@ -183,8 +183,8 @@ pub struct AppModel {
     pub(crate) schedule: scheduler::State,
     /// Backoff sleep handed to the sync client; tests use an instant one.
     pub sync_sleep: Option<SleepFn>,
-    /// Persisted offline sync queue (the store's `sync-queue` key, opaque JS
-    /// shape), shared with the sync client's persist callback.
+    /// Persisted offline sync queue (the store's `sync-queue` key, kept in
+    /// its stored shape), shared with the sync client's persist callback.
     sync_queue: QueueMirror,
     /// `sync_queue` revision included in the newest snapshot handed to a
     /// writer.
@@ -322,8 +322,8 @@ impl AppModel {
     }
 
     /// Installs `hooks` (`main.rs`: the real integrations), then brings the
-    /// tray and the OS wake entry in step with the model, as the JS effects
-    /// did once `ready` was set.
+    /// tray and the OS wake entry in step with the model (once `ready` is
+    /// set).
     pub fn set_hooks(&mut self, hooks: Hooks, cx: &mut Context<Self>) {
         self.hooks = hooks;
         self.tray_shown = None;
@@ -456,7 +456,7 @@ impl AppModel {
     }
 
     /// Fully hydrated: local disk loaded and, when signed in, every synced
-    /// resource pulled (`hydrated` in `App.jsx`). Gates first-run UI so the
+    /// resource pulled. Gates first-run UI so the
     /// tutorial doesn't flash between local load and the server data.
     pub fn hydrated(&self) -> bool {
         self.ready && (self.account.is_none() || self.resources_pulled)
@@ -503,7 +503,7 @@ impl AppModel {
         .detach();
     }
 
-    /// Writes everything not yet on disk, synchronously (Task 7's quit
+    /// Writes everything not yet on disk, synchronously (the quit
     /// flush, also run by [`flush_now`](Self::flush_now)).
     ///
     /// It runs inside the quit callback, so by the time the quit future is
@@ -600,7 +600,7 @@ mod tests {
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../radar-core/tests/fixtures/tauri_radar.json")
+            .join("../radar-core/tests/fixtures/legacy_store.json")
     }
 
     fn add_one(model: &Entity<AppModel>, cx: &mut TestAppContext) {

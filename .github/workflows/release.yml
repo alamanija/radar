@@ -5,8 +5,8 @@
 #     git commit -am "chore: release vX.Y.Z" && git tag vX.Y.Z
 #     git push && git push --tags
 # Output: a GitHub Release with the per-platform installers, their `.sig`
-# files, and a `latest.json` manifest (scripts/make-latest-json.sh) that both
-# the installed Tauri builds and this app's cargo-packager-updater read.
+# files, and a `latest.json` manifest (scripts/make-latest-json.sh) that the
+# app's updater reads, including in already-installed older builds.
 #
 # Dry run: start the workflow by hand (Actions > Release > Run workflow) on a
 # branch. It checks the configuration, then builds, packages and signs both
@@ -17,9 +17,10 @@
 # Intel macOS and Linux are intentionally not built; there is no updater
 # entry for them, so those installs stop receiving updates.
 #
-# Repository secrets (Settings > Secrets and variables > Actions). They are the
-# existing Tauri minisign key; cargo-packager reads the same key format:
-#   TAURI_SIGNING_PRIVATE_KEY          - contents of ~/.tauri/radar.key
+# Repository secrets (Settings > Secrets and variables > Actions). The release
+# minisign key, unchanged since earlier releases (the secret names are kept
+# from then); cargo-packager reads it as CARGO_PACKAGER_SIGN_PRIVATE_KEY*:
+#   TAURI_SIGNING_PRIVATE_KEY          - contents of the minisign private key file
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - the password chosen at generate time
 # Repository variables (same page, "Variables" tab; public values, baked into
 # the binary at compile time). A repository secret of the same name works too;

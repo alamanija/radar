@@ -1,4 +1,4 @@
-//! Port of `src/components/Toggle.jsx`: a 30×18 switch.
+//! A 30×18 switch.
 
 use crate::theme;
 use gpui_kit::base::TestSupportExt as _;

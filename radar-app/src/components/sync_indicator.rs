@@ -1,5 +1,4 @@
-//! Port of `src/components/SyncIndicator.jsx` (and `useSyncStatus.js`): the
-//! one-line sync status above the sidebar footer, shown while signed in.
+//! The one-line sync status above the sidebar footer, shown while signed in.
 //! Quiet when idle, amber while changes are queued or in flight, red when
 //! the queue reports a failure and nothing is left to retry.
 
@@ -30,7 +29,7 @@ pub struct Indicator {
     pub title: String,
 }
 
-/// The JSX rules: an error with nothing pending wins, then pending or
+/// The rules: an error with nothing pending wins, then pending or
 /// in-flight work, else idle. Idle adds the last successful sync time to
 /// the title when one is known.
 pub fn indicator(st: &SyncStatus, now_ms: i64) -> Indicator {
@@ -73,7 +72,7 @@ fn dot(tone: Tone, t: &Tokens) -> Hsla {
     }
 }
 
-/// `styles.row`: 6/12 padding, 11 px text-3 on surface-2 between two
+/// The status row: 6/12 padding, 11 px text-3 on surface-2 between two
 /// borders; a 7 px dot and the label (one line, ellipsis, tabular figures).
 /// The title is the hover tooltip and the accessible description.
 pub fn render(st: &SyncStatus, t: &Tokens) -> impl IntoElement {

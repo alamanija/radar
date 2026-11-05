@@ -1,4 +1,4 @@
-//! Port of `src/components/OnboardingTutorial.jsx`: the first-run
+//! The first-run
 //! walkthrough shown inline on the briefing view. Progress is inferred from
 //! the model (name set, categories, sources), so the user sees it fill in.
 

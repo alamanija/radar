@@ -1,4 +1,4 @@
-//! Shell components (ports of `src/components/*.jsx`).
+//! Shell components.
 //!
 //! Each shell part is a function the [`Workspace`](crate::workspace::Workspace)
 //! calls from its render with the current [`AppModel`](crate::app_model::AppModel).
@@ -22,9 +22,8 @@ use gpui_kit::{
 };
 use icon::{Icon, IconName};
 
-/// The `.iconbtn` class of `styles.css`: 32×32, `--radius`, text-2;
-/// hover: surface-2 and text; `.active`: accent-text on accent-soft (and
-/// no hover change, as `.active` wins the CSS tie).
+/// A 32×32 icon button: `radius`, text-2; hover: surface-2 and text;
+/// active: accent-text on accent-soft (and no hover change).
 pub fn icon_button(
     id: impl Into<ElementId>,
     icon: IconName,

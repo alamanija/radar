@@ -416,7 +416,7 @@ fn attr_value(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Article id: the hash of `(source_id, url)`, in the form the Tauri app
+/// Article id: the hash of `(source_id, url)`, in the form earlier releases
 /// stored it, so ids from existing installs (read/bookmark state, archives,
 /// article-state rows on the server) keep matching.
 fn hash_id(source_id: u32, url: &str) -> u64 {
@@ -426,10 +426,11 @@ fn hash_id(source_id: u32, url: &str) -> u64 {
     js_number(h.finish())
 }
 
-/// `n` as the Tauri app's webview kept it: the nearest f64, written back in
-/// its shortest decimal form (`JSON.stringify` / `String`), which Rust's f64
-/// `Display` reproduces. Above 2^53 that is a rounded value. One that rounds
-/// up to 2^64 doesn't fit a u64 and is kept as is.
+/// `n` as earlier releases kept it, a JavaScript number round-trip: the
+/// nearest f64, written back in its shortest decimal form (`JSON.stringify` /
+/// `String`), which Rust's f64 `Display` reproduces. Above 2^53 that is a
+/// rounded value. One that rounds up to 2^64 doesn't fit a u64 and is kept
+/// as is.
 fn js_number(n: u64) -> u64 {
     (n as f64).to_string().parse::<u64>().unwrap_or(n)
 }
@@ -457,9 +458,9 @@ mod tests {
         assert_eq!(first_img_src(html).as_deref(), Some("https://e.com/a.png"));
     }
 
-    /// The ids the Tauri app stored. Its Rust side sent the full 64-bit hash
-    /// as a JSON number; the webview kept the nearest f64 and wrote that
-    /// back (`JSON.stringify` into `radar.json`, `String(id)` in article-state
+    /// The ids earlier releases stored. The full 64-bit hash went out as a
+    /// JSON number; JavaScript kept the nearest f64 and wrote that back
+    /// (`JSON.stringify` into `radar.json`, `String(id)` in article-state
     /// PATCHes). Expected values computed with node 22:
     /// `String(JSON.parse("13612357342556405454"))`.
     #[test]
@@ -478,7 +479,7 @@ mod tests {
         );
         assert_eq!(js_number(9_007_199_254_740_993), 9_007_199_254_740_992);
         assert_eq!(js_number(42), 42);
-        // Rounds up to 2^64, which JS printed but a u64 can't hold: kept.
+        // Rounds up to 2^64, which JavaScript prints but a u64 can't hold: kept.
         assert_eq!(js_number(u64::MAX), u64::MAX);
     }
 
@@ -489,13 +490,13 @@ mod tests {
 <item><title>Inside a carton lab</title><link>https://thedieline.com/carton-lab</link><description>A visit.</description></item>
 </channel></rss>"#;
 
-    /// An install upgraded from the Tauri app (the fixture holds what it
+    /// An install upgraded from an earlier release (the fixture holds what it
     /// wrote): the next briefing yields the same `(source_id, url)` articles,
     /// and both kinds of stored state find them again: the flags in
-    /// `radar.json`, and the article-state row the JS queued (served as the
-    /// server holds it once drained). New writes dedup against the JS ones.
+    /// `radar.json`, and the article-state row it queued (served as the
+    /// server holds it once drained). New writes dedup against the legacy ones.
     #[tokio::test]
-    async fn tauri_era_state_overlays_after_a_briefing() {
+    async fn legacy_state_overlays_after_a_briefing() {
         use crate::model::RadarModel;
         use crate::sync::article_states;
         use crate::sync::queue::{Queue, QueuedReq};
@@ -507,7 +508,7 @@ mod tests {
 
         let snap = crate::store::load(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/tauri_radar.json"),
+                .join("tests/fixtures/legacy_store.json"),
         );
         let queued: Vec<QueuedReq> =
             serde_json::from_value(Value::Array(snap.sync_queue.clone())).unwrap();
@@ -556,7 +557,7 @@ mod tests {
         assert_eq!(saved, ["https://thedieline.com/oat-milk-cartons"]);
         assert!(by_url(&m.articles, "/carton-lab").read);
 
-        // The article-state row, keyed by the JS `String(id)`.
+        // The article-state row, keyed by the legacy `String(id)`.
         let c = crate::sync::test_support::client(&server.base_url());
         let states = article_states::pull(&c).await.unwrap();
         let mut fresh = resp.articles.clone();
@@ -567,7 +568,7 @@ mod tests {
             "the row finds the new id"
         );
 
-        // A new write for the same article or resource replaces the JS one.
+        // A new write for the same article or resource replaces the legacy one.
         let lab = by_url(&m.articles, "/carton-lab");
         let mut q = Queue::new(queued);
         q.enqueue(QueuedReq::new(
@@ -582,7 +583,7 @@ mod tests {
             json!({}),
             Some(SyncedResource::<PrefsRes>::group_key()),
         ));
-        assert_eq!(q.items.len(), 2, "both JS items were superseded");
+        assert_eq!(q.items.len(), 2, "both older queue items were superseded");
         assert!(q.items.iter().all(|i| i.account_id.is_none()));
     }
 

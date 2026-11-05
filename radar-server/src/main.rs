@@ -148,12 +148,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Build the CORS layer from the `CORS_ORIGINS` env var — comma-separated
-/// list. Defaults to the Tauri dev origins if unset so local development
-/// just works. Exposes `ETag` so the browser can read it from fetch
-/// responses (it's not in the CORS-safe-list by default).
+/// list. Unset or empty allows no browser origin: the desktop client sends
+/// no `Origin`, so CORS only matters for a web client added later. Exposes
+/// `ETag` so a browser can read it from fetch responses (it's not in the
+/// CORS-safe-list by default).
 fn build_cors() -> Result<CorsLayer, Box<dyn std::error::Error>> {
-    let raw = std::env::var("CORS_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:1420,tauri://localhost".into());
+    let raw = std::env::var("CORS_ORIGINS").unwrap_or_default();
     let origins: Vec<HeaderValue> = raw
         .split(',')
         .map(|s| s.trim())

@@ -1,6 +1,6 @@
-//! Wire shapes for the sync endpoints. The frontend mirrors these over
-//! fetch; types live here rather than a shared crate because the server is
-//! the only Rust consumer (the Tauri client no longer proxies requests).
+//! Wire shapes for the sync endpoints. The desktop client mirrors these in
+//! `radar-core`; there is no shared crate, so the two are kept in step
+//! by hand.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

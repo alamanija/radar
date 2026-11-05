@@ -26,10 +26,10 @@ services:
       - key: RUST_LOG
         value: radar_server=info,tower_http=info
       - key: CORS_ORIGINS
-        # Tauri 2 webview origins. `tauri://localhost` covers macOS/Linux,
-        # `https://tauri.localhost` covers Windows WebView2. Add any web
-        # origin you ship here later (e.g. `https://radar.app`).
-        value: tauri://localhost,https://tauri.localhost
+        # Browser origins allowed to call the API (comma-separated). Empty:
+        # the desktop app sends no Origin, so it needs none. Add a web
+        # origin here if one ships (e.g. `https://radar.app`).
+        value: ""
 
       # Secrets — set from the Render dashboard on first deploy. `sync:
       # false` keeps them out of this file and the git log.

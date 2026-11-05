@@ -81,7 +81,7 @@ against). See `migrations/` for details.
 
 The native Radar desktop app signs in with Clerk OAuth (PKCE, loopback
 redirect) and sends the resulting **Clerk OAuth access token** as the bearer.
-Session JWTs from the old webview (Tauri) client are still accepted. Both are RS256,
+Clerk session JWTs (used by older clients) are still accepted. Both are RS256,
 signed by the same instance key (same JWKS), validated for `exp` and `iss`;
 `aud` is not checked. Identity is `sub`.
 

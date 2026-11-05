@@ -1,7 +1,7 @@
 //! Radar desktop app (GPUI Kit). Boot order: logging → single-instance
 //! check → application (assets, HTTP client, explicit quit mode, Dock
 //! reopen) → kit init → app identity → fonts → global model (and, off the
-//! UI thread, the Tauri-era keychain cleanup) → tray and notification
+//! UI thread, the obsolete keychain entry cleanup) → tray and notification
 //! clicks → the real OS hooks, session sync and the login-item re-point →
 //! app actions/menu → shell key bindings → scheduler and run-at-launch →
 //! main window (skipped with `--autostart`).
@@ -84,8 +84,7 @@ fn main() {
         // GPUI's default quits on last-window-close off macOS. Quitting is
         // explicit: the Quit action (secondary-q, app menu) or the tray.
         .with_quit_mode(QuitMode::Explicit);
-    // macOS: clicking the Dock icon with no window open brings it back
-    // (Tauri `RunEvent::Reopen`).
+    // macOS: clicking the Dock icon with no window open brings it back.
     app.on_reopen(open_main_window);
     app.run(move |cx| {
         gpui_kit::init(cx);
@@ -97,7 +96,7 @@ fn main() {
             log::info!("[auth] Clerk not configured; running local-only");
         }
         let model = AppModel::init(radar_core::store::default_path(), session, cx);
-        // The Tauri app's `clerk_db_jwt` keychain entry is dead weight now.
+        // The `clerk_db_jwt` keychain entry older builds left is dead weight.
         drop(bridge::on_blocking(|| {
             radar_core::keychain::delete_legacy_entries(&OsKeyStore)
         }));
@@ -108,8 +107,8 @@ fn main() {
             m.set_hooks(os_hooks(), cx);
             // A session restored from the keychain syncs right away.
             m.start_sync(cx);
-            // An enabled "Open at login" entry from an older build (the
-            // Tauri app) is pointed at this executable.
+            // An enabled "Open at login" entry from an older build is
+            // pointed at this executable.
             m.repoint_login_item();
         });
         register_app_actions(cx, |cx| cx.quit());
@@ -221,7 +220,7 @@ pub fn open_main_window(cx: &mut App) {
     }
 }
 
-/// The Radar window that has OS focus, if any (JS `document.hasFocus()`).
+/// The Radar window that has OS focus, if any.
 pub fn active_radar_window(cx: &mut App) -> Option<AnyWindowHandle> {
     cx.windows().into_iter().find(|handle| {
         handle
@@ -230,7 +229,7 @@ pub fn active_radar_window(cx: &mut App) -> Option<AnyWindowHandle> {
     })
 }
 
-/// The tray's left-click (Tauri `toggle_main_window`): closes the focused
+/// The tray's left-click: closes the focused
 /// Radar window, otherwise opens or focuses the main window.
 pub fn toggle_main_window(cx: &mut App) {
     match active_radar_window(cx) {
@@ -244,9 +243,8 @@ pub fn toggle_main_window(cx: &mut App) {
     }
 }
 
-/// A closing window flushes: the store write and the sync push happen now
-/// (JS: flush on `pagehide`). The app keeps running, so the push finishes
-/// on its own.
+/// A closing window flushes: the store write and the sync push happen now.
+/// The app keeps running, so the push finishes on its own.
 fn flush_on_close(cx: &mut App) {
     log::info!("[window] main window closed; staying alive");
     drop(AppModel::global(cx).update(cx, |m, cx| m.flush_now(cx)));

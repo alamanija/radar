@@ -1,4 +1,4 @@
-//! Port of `src/views/EmptyState.jsx`: a dashed placeholder box with an
+//! A dashed placeholder box with an
 //! icon, a serif title and a message. Saved and Archive use it.
 
 use crate::components::icon::{Icon, IconName};

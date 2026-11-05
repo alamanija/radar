@@ -7,8 +7,8 @@ license.workspace = true
 publish.workspace = true
 description = "Radar desktop app (GPUI Kit)"
 
-# The Tauri app's binary was `radar` too: login items, the Windows install
-# and the Tauri updater's relaunch all name `.../radar(.exe)`.
+# Earlier releases' binary was `radar` too: login items, the Windows install
+# and older builds' updater relaunch all name `.../radar(.exe)`.
 [[bin]]
 name = "radar"
 path = "src/main.rs"
@@ -76,5 +76,5 @@ icons = [
 signing-identity = "-"
 
 [package.metadata.packager.nsis]
-# Same per-user install the Tauri build used.
+# Same per-user install earlier releases used.
 installer-mode = "currentUser"

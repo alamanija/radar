@@ -1,6 +1,5 @@
-//! Per-article read/bookmark sync (`/sync/article-states`). Port of the
-//! article-state effect and `patchArticleState` in `src/App.jsx`. Per-row
-//! PATCH semantics, so this doesn't ride `SyncedResource`.
+//! Per-article read/bookmark sync (`/sync/article-states`). Per-row PATCH
+//! semantics, so this doesn't ride `SyncedResource`.
 
 use super::queue::QueuedReq;
 use super::{Resp, SyncClient, SyncError};

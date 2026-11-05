@@ -1,5 +1,5 @@
 //! Shared wire/domain types. Field names are camelCase on the wire to match
-//! what the old JS frontend stored.
+//! what earlier releases stored.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

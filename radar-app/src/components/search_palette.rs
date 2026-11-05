@@ -1,4 +1,4 @@
-//! The ⌘K search palette (port of `SearchPalette.jsx`): a gpui-kit
+//! The ⌘K search palette: a gpui-kit
 //! [`Command`] hosted in a dialog, over [`radar_core::search::search`].
 //!
 //! [`Workspace::search_open`] stays the source of truth for "is it open":
@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 const EMPTY_QUERY_HINT: &str = "Type to search articles and sources.";
 const NO_MATCHES: &str = "No matches.";
-/// `styles.panel.width`.
+/// Panel width.
 const WIDTH: f32 = 600.;
 /// Kit groups are addressed by position; both are always present so the
 /// section of a hit never depends on the other group being empty.
@@ -172,7 +172,7 @@ impl Render for SearchPalette {
             .on_confirm(move |ix, window, cx| {
                 choose(&shown.borrow(), ix, &workspace, window, cx);
             });
-        // Esc closes at once, as in the JSX: take it before the kit's
+        // Esc closes at once: take it before the kit's
         // clear-the-query-first handler sees it.
         div()
             .child(command)
@@ -235,7 +235,7 @@ fn result_row(
 }
 
 /// Enter / click on a row: open the article's URL, or go to Sources; then
-/// close either way (`pick` in the JSX).
+/// close either way.
 fn choose(
     shown: &Shown,
     ix: IndexPath,

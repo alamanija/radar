@@ -1,5 +1,5 @@
-//! Sign-in, sign-out and the live sync loop: ports of the sync effects in
-//! `App.jsx`, `useSyncedResource.js`, `syncQueue.js` and `flushRegistry.js`.
+//! Sign-in, sign-out and the live sync loop: pulls, debounced pushes, the
+//! offline queue and the flush on close/quit.
 //!
 //! # Shape
 //! - One signed-in session owns a [`Lifecycle`]: a worker task that runs
@@ -48,7 +48,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// Debounce between the last model change and the sync push (JS 800 ms).
+/// Debounce between the last model change and the sync push.
 pub const PUSH_DEBOUNCE: Duration = Duration::from_millis(800);
 /// How often the queue is drained while it holds items, and failed pulls
 /// are retried.
@@ -146,7 +146,7 @@ impl SyncResources {
     }
 
     /// A queued PUT landed: its server body updates that resource's etag and
-    /// server key, so the next If-Match isn't stale (JS `onDrainSuccess`).
+    /// server key, so the next If-Match isn't stale.
     /// Returns that resource's new last-synced digest.
     fn on_drained(&mut self, key: &str, body: &Value, local: &LocalRefs) -> Digests {
         let mut d = Digests::default();
@@ -172,7 +172,8 @@ impl SyncResources {
 
 /// The store's `sync-queue` key, kept in step with the sync client.
 pub(super) struct PersistedQueue {
-    /// Queue items in the JS shape (what the store holds).
+    /// Queue items in the stored shape (`groupKey`, `accountId`, …), as the
+    /// store holds them.
     pub items: Vec<Value>,
     /// Bumped on every change.
     pub rev: u64,
@@ -236,8 +237,7 @@ impl RuntimeWork {
 }
 
 /// Per-device prefs (`view`, `sidebarCollapsed`) never travel: keep the live
-/// ones, which may have changed while the op ran (JS `setSyncedPrefs` never
-/// touched them).
+/// ones, which may have changed while the op ran.
 fn merge_prefs(synced: Prefs, live: &Prefs) -> Prefs {
     Prefs {
         view: live.view,
@@ -458,7 +458,7 @@ impl Job {
         let c = &*client;
         let mut out = Outcome::default();
         match op {
-            // The order of the `App.jsx` effects: profile, categories,
+            // In order: profile, categories,
             // sources, article states, prefs, archives. Only what hasn't
             // pulled yet (a retry skips what already succeeded).
             Op::Pull => {
@@ -636,8 +636,8 @@ impl AppModel {
     /// client and its tasks, then deletes the keychain entry off the UI
     /// thread. Local data stays.
     ///
-    /// Account-boundary policy (T6): edits still inside the push debounce are
-    /// not pushed (JS parity: the effect cleanup cleared the timer). A
+    /// Account-boundary policy: edits still inside the push debounce are
+    /// not pushed (sign-out cancels the debounce timer). A
     /// mutation that meets a rejected refresh token (`invalid_grant`) comes
     /// back `NotSignedIn` and is not queued, and `reset()` also clears
     /// `failed_pull_key`. The last-synced digests are dropped too (the next
@@ -661,7 +661,8 @@ impl AppModel {
 
     /// Starts sync for the signed-in account: a fresh client (with the
     /// persisted queue), then, in order, a drain of writes queued earlier, the
-    /// pulls in `App.jsx` effect order, and the push/drain loops.
+    /// pulls (profile, categories, sources, article states, prefs,
+    /// archives), and the push/drain loops.
     ///
     /// Every start is an account boundary: whatever was learned from the
     /// previous account (server keys, etags) is reset first. The first pull
@@ -806,8 +807,8 @@ impl AppModel {
     }
 
     /// Writes everything that is pending, now. Called when the window closes
-    /// and when the app quits (replaces `flushRegistry.js`):
-    /// 1. the store write of Task 7, synchronously (unchanged semantics);
+    /// and when the app quits:
+    /// 1. the store write (`flush_store`), synchronously;
     /// 2. the sync push, skipping the debounce. It runs on tokio, and a write
     ///    that can't reach the server lands in the offline queue.
     ///

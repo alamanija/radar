@@ -1,5 +1,4 @@
-//! Cross-device sync against `radar-server`. Port of `src/sync.js`,
-//! `src/syncQueue.js` and `src/hooks/useSyncedResource.js`.
+//! Cross-device sync against `radar-server`.
 //!
 //! The app owns the model; everything here reads values passed in and returns
 //! merged values. No background tasks: draining the offline queue is an
@@ -80,7 +79,7 @@ impl Resp {
     pub const ACCEPTED: u16 = 202;
 
     /// Synthetic "accepted" response for a mutation that went into the queue.
-    /// Echoes the request body, like the JS `syntheticAccepted`.
+    /// Echoes the request body.
     pub fn accepted(body: &Value) -> Self {
         Self {
             status: Self::ACCEPTED,
@@ -130,7 +129,7 @@ pub struct SyncClient {
     base: String,
     session: Session,
     http: reqwest::Client,
-    /// Held for a whole drain pass; `try_lock` doubles as the JS `draining`
+    /// Held for a whole drain pass; `try_lock` doubles as the drain
     /// re-entrancy guard.
     queue: Mutex<Queue>,
     shared: std::sync::Mutex<Shared>,

@@ -1,5 +1,4 @@
-//! Port of `Card` (and its `Thumb`) from `src/components/Card.jsx`: one
-//! article as a grid card.
+//! One article as a grid card, with its thumbnail.
 //!
 //! [`Card`] is a stateless component. Its clicks become [`CardEvent`]s that
 //! go to the handler set with [`Card::on_event`]; without one, a live card
@@ -7,10 +6,9 @@
 //! [`AppModel`](crate::app_model::AppModel) ([`apply_event`]), and a
 //! read-only card (Archive) ignores the toggles.
 //!
-//! Not ported from the CSS: the hover `translateY(-1px)` and the
-//! `fade-up` entrance (GPUI has no element transforms), letter spacing, and
-//! the italic of the placeholder initials (only the upright Newsreader is
-//! embedded).
+//! Left out by design: a hover lift and a fade-up entrance (GPUI has no
+//! element transforms), letter spacing, and italic placeholder initials
+//! (only the upright Newsreader is embedded).
 
 use super::icon::IconName;
 use super::icon_button;
@@ -49,8 +47,8 @@ pub type CardHandler = Rc<dyn Fn(CardEvent, &mut Window, &mut App)>;
 type Emit = Rc<dyn Fn(CardEvent, &mut Window, &mut App, &Article)>;
 
 /// The default effect of a [`CardEvent`] on the global model. `Open` opens
-/// the article's URL and changes nothing else (`Card.jsx` only calls
-/// `openExternal`).
+/// the article's URL and changes nothing else (it does not mark the
+/// article read).
 pub fn apply_event(cx: &mut App, article: &Article, event: CardEvent, read_only: bool) {
     let id = article.id;
     let model = AppModel::global(cx);
@@ -117,7 +115,7 @@ pub fn part_id(scope: &str, id: u64, part: &str) -> SharedString {
 }
 
 /// Up to two initials of the source name (`Dezeen` -> `D`, `It's Nice
-/// That` -> `IN`), as `source.split(' ').map(w => w[0]).join('')`.
+/// That` -> `IN`): the first character of each space-separated word.
 fn initials(source: &str) -> String {
     source
         .split(' ')
@@ -185,7 +183,7 @@ impl RenderOnce for Card {
     }
 }
 
-/// `cardStyles.body` and everything in it.
+/// The card body and everything in it.
 fn body(
     a: &Article,
     ns: &str,
@@ -357,7 +355,7 @@ fn dot(color: Hsla, d: f32) -> gpui_kit::Div {
     div().flex_none().size(px(d)).rounded_full().bg(color)
 }
 
-/// `cardStyles.thumb`: the cover image, or a decorative placeholder.
+/// The thumbnail: the cover image, or a decorative placeholder.
 fn thumb(a: &Article, ns: &str, t: &Tokens) -> impl IntoElement {
     let label = div()
         .absolute()
@@ -400,7 +398,7 @@ fn thumb(a: &Article, ns: &str, t: &Tokens) -> impl IntoElement {
                         .inset_0()
                         .size_full()
                         .object_fit(ObjectFit::Cover)
-                        // `onError` -> the same placeholder as no image.
+                        // A failed load -> the same placeholder as no image.
                         .with_fallback(move || fallback().into_any_element()),
                 )
                 .child(label)
@@ -474,8 +472,8 @@ impl Pattern {
     }
 }
 
-/// The five `background-image`s of the placeholder (`patterns` in
-/// `Card.jsx`), painted as quads and strokes.
+/// The five background patterns of the placeholder, painted as quads and
+/// strokes.
 fn paint_pattern(
     kind: Pattern,
     bounds: Bounds<gpui_kit::Pixels>,

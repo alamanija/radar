@@ -1,15 +1,15 @@
-//! Port of `src/views/SourcesView.jsx`: the filterable source list with
+//! The filterable source list with
 //! inline add and edit rows.
 //!
 //! # State
 //! [`SourcesView`] lives on the `Workspace` and is dropped whenever another
-//! view is shown (the JSX state dies with the unmounted component). The
+//! view is shown, so no edit draft outlives the view. The
 //! edit row's draft is held by its widgets: two gpui-kit `Input`s and a
 //! `Select` ([`Editing`]), read when Save is pressed.
 //!
-//! # Differences from the JSX
-//! - `<input>`/`<select>` are gpui-kit `Input`/`Select`; they keep the
-//!   kit's focus ring and menu chrome (see the task report).
+//! # Design notes
+//! - The edit row's fields are gpui-kit `Input`/`Select`; they keep the
+//!   kit's focus ring and menu chrome.
 //! - Hover titles use GPUI tooltips and also set the accessible
 //!   description, which is what tests read.
 
@@ -39,7 +39,7 @@ use radar_core::model::SourcePatch;
 use radar_core::text::relative_time_ms;
 use radar_core::types::{Category, Source, SourceHealth};
 
-/// Message for an unusable feed URL (`attemptSave` in the JSX).
+/// Message for an unusable feed URL, shown on Save.
 pub const URL_ERROR: &str = "Feed URL must start with http:// or https://";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -91,7 +91,7 @@ pub struct SourcesView {
     pub editing: Option<Editing>,
 }
 
-/// `isValidFeedUrl`: empty is fine ("no URL yet"); otherwise the text must
+/// Empty is fine ("no URL yet"); otherwise the text must
 /// parse as an absolute URL with an `http:` or `https:` scheme.
 pub fn is_valid_feed_url(u: &str) -> bool {
     if u.is_empty() {
@@ -100,8 +100,8 @@ pub fn is_valid_feed_url(u: &str) -> bool {
     url::Url::parse(u).is_ok_and(|p| matches!(p.scheme(), "http" | "https"))
 }
 
-/// `healthStyle`: Live green, Delayed amber (both fixed hex in the JSX),
-/// Stale muted.
+/// Health dot color: Live green, Delayed amber (both fixed hex, the same in
+/// either theme), Stale muted.
 pub fn health_color(h: SourceHealth, t: &Tokens) -> Hsla {
     match h {
         SourceHealth::Ok => gpui_kit::rgb(0x6B8E4E).into(),
@@ -130,7 +130,7 @@ fn options(categories: &[Category]) -> Vec<CategoryOption> {
 
 impl SourcesView {
     /// Opens the edit row for `target` (replacing any open one), with the
-    /// draft of `emptyDraft()` or `startEdit()`.
+    /// draft empty (new source) or filled from the source being edited.
     pub fn open(
         &mut self,
         target: Target,
@@ -172,7 +172,7 @@ impl SourcesView {
         self.open(Target::New, window, cx);
     }
 
-    /// `attemptSave`: validate, then add or patch through the model.
+    /// Validate, then add or patch through the model.
     fn save(&mut self, cx: &mut Context<Workspace>) {
         let Some(ed) = self.editing.as_mut() else {
             return;
@@ -263,7 +263,7 @@ fn filter_pill(
         .render(t, [count_span(n, active, t)])
 }
 
-/// `srcRow` column widths: `20px 1fr 140px 110px 44px`, gap 14.
+/// Source row column widths: 20, flexible, 140, 110 and 44 px; gap 14.
 fn grid_row() -> Div {
     div()
         .flex()

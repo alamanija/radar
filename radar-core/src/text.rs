@@ -1,5 +1,5 @@
-//! Pure text helpers: greeting, relative time and tray tooltip. Ports of
-//! `src/time.js` and `src/tray.js`. Time is always a parameter.
+//! Pure text helpers: greeting, relative time and tray tooltip. Time is
+//! always a parameter.
 
 use crate::types::Article;
 use chrono::{DateTime, Datelike, Local, Timelike};
@@ -58,11 +58,11 @@ pub fn relative_time_ms(ms: Option<i64>, now_ms: i64) -> String {
     format!("{}mo ago", d / 30)
 }
 
-/// Archive row/heading date (`formatRunAt` in `ArchiveView.jsx`):
+/// Archive row/heading date:
 /// `Today · 9:05 AM`, `Yesterday · 9:05 AM`, else
 /// `Wednesday, November 5 · 9:05 AM`, in local time relative to `now`.
-/// An unparseable `iso` is returned unchanged (JS would show "Invalid
-/// Date"; the raw text at least says what the archive holds).
+/// An unparseable `iso` is returned unchanged (the raw text at least says
+/// what the archive holds).
 pub fn format_run_at(iso: &str, now: DateTime<Local>) -> String {
     let Ok(d) = DateTime::parse_from_rfc3339(iso) else {
         return iso.to_string();

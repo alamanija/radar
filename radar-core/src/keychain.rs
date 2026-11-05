@@ -11,7 +11,7 @@ const SERVICE: &str = "com.radar.dev";
 pub const ANTHROPIC_USER: &str = "anthropic";
 /// Keychain username holding the Clerk OAuth `Tokens` (as JSON).
 pub const CLERK_OAUTH_USER: &str = "clerk_oauth";
-/// Where the Tauri app kept Clerk's `__clerk_db_jwt` for its webview.
+/// Where older builds kept Clerk's `__clerk_db_jwt`.
 /// Nothing reads it any more; [`delete_legacy_entries`] removes it.
 pub const LEGACY_CLERK_DB_JWT_USER: &str = "clerk_db_jwt";
 
@@ -129,14 +129,14 @@ pub fn read_api_key() -> Option<String> {
     read_anthropic_api_key(&OsKeyStore)
 }
 
-/// Removes what the Tauri app left in the keychain and this app never
+/// Removes what older builds left in the keychain and this app never
 /// reads (`clerk_db_jwt`). Best effort: a missing entry is success, and a
 /// failure is only logged (never the value). Blocks; run it off the UI
 /// thread.
 pub fn delete_legacy_entries(store: &dyn KeyStore) {
     match store.delete(LEGACY_CLERK_DB_JWT_USER) {
-        Ok(()) => log::debug!("[keychain] no Tauri-era {LEGACY_CLERK_DB_JWT_USER} entry left"),
-        Err(e) => log::warn!("[keychain] removing the Tauri-era entry failed: {e}"),
+        Ok(()) => log::debug!("[keychain] no legacy {LEGACY_CLERK_DB_JWT_USER} entry left"),
+        Err(e) => log::warn!("[keychain] removing the legacy entry failed: {e}"),
     }
 }
 
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_cleanup_removes_only_the_tauri_jwt() {
+    fn legacy_cleanup_removes_only_the_old_jwt() {
         let s = MemKeyStore::new();
         s.set(LEGACY_CLERK_DB_JWT_USER, "dvb_x").unwrap();
         s.set(ANTHROPIC_USER, "sk-ant-x").unwrap();

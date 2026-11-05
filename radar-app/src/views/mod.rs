@@ -1,4 +1,4 @@
-//! Page views (ports of `src/views/*.jsx`).
+//! Page views.
 
 pub mod archive;
 pub mod briefing;

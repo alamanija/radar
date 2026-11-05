@@ -1,8 +1,8 @@
-//! The icon set of `src/components/Icon.jsx`, drawn from embedded SVGs in
-//! `assets/icons/ui/` (paths copied verbatim from the JSX).
+//! The icon set, drawn from embedded SVGs in `assets/icons/ui/`.
 //!
 //! `Icon::new(IconName::Search).size(px(14.))` paints in the inherited text
-//! color (CSS `currentColor`); set `text_color` on a parent to change it.
+//! color (the SVGs' `currentColor`); set `text_color` on a parent to change
+//! it.
 //!
 //! To add an icon: drop `<name>.svg` into `assets/icons/ui/` (24×24 viewBox,
 //! `stroke="currentColor"`), then add a variant to [`IconName`] and one row
@@ -93,7 +93,7 @@ impl AssetSource for AppAssets {
     }
 }
 
-/// One icon. Default size 16 px (the JSX default).
+/// One icon. Default size 16 px.
 #[derive(gpui_kit::IntoElement)]
 pub struct Icon {
     name: IconName,
@@ -115,7 +115,7 @@ impl Icon {
         self
     }
 
-    /// The `.spin` class: one turn per second, forever.
+    /// Spinning: one turn per second, forever.
     pub fn spin(mut self, spin: bool) -> Self {
         self.spin = spin;
         self

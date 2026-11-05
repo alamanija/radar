@@ -1,7 +1,6 @@
-//! Port of `src/views/ArchiveView.jsx`: the list of past briefings and the
-//! drill-in to one snapshot. The drill-in selection is local view state
-//! ([`ArchiveView`]), reset when the user leaves the view (the JSX state
-//! dies with the unmounted component).
+//! The list of past briefings and the drill-in to one snapshot. The
+//! drill-in selection is local view state ([`ArchiveView`]), reset when the
+//! user leaves the view.
 //!
 //! Snapshot cards are read-only (`read_only: true`; toggles do nothing)
 //! and scoped `archive-<id>`, so an article that is also in the live
@@ -47,7 +46,7 @@ fn unread(a: &Archive) -> usize {
     a.articles.iter().filter(|x| !x.read).count()
 }
 
-/// `archiveStyles.rowMuted` cell: 80 px, mono 12, right aligned.
+/// A muted row cell: 80 px, mono 12, right aligned.
 fn muted(id: String, text: String, t: &Tokens) -> impl IntoElement {
     div()
         .id(SharedString::from(id))

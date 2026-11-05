@@ -1,5 +1,5 @@
-//! The five full-list synced resources. Bodies, merges and keys are ported
-//! from `src/App.jsx` (profile, categories, sources, prefs, archives).
+//! The five full-list synced resources (profile, categories, sources, prefs,
+//! archives): their bodies, merges and keys.
 //!
 //! Remote snapshots are parsed leniently: an item that doesn't fit the local
 //! type is skipped, and a missing or non-array list falls back as noted per
@@ -110,7 +110,7 @@ impl SyncResource for CategoriesRes {
 // ---- sources ---------------------------------------------------------------
 
 /// Only user-editable fields travel; `lastFetchAt` and `health` are
-/// per-device observations (JS `sourceWire`).
+/// per-device observations.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceWire {

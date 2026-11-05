@@ -1,5 +1,5 @@
-//! "Open at login" through `auto-launch`, as `tauri-plugin-autostart` did
-//! with `MacosLauncher::LaunchAgent`:
+//! "Open at login" through `auto-launch`, the same mechanisms earlier
+//! releases registered:
 //! - macOS: a LaunchAgent plist, `~/Library/LaunchAgents/Radar.plist`;
 //! - Windows: the current user's `Run` registry key;
 //! - Linux: an XDG autostart entry.
@@ -18,7 +18,7 @@ use anyhow::Context as _;
 use auto_launch::{AutoLaunch, AutoLaunchBuilder, MacOSLaunchMode, WindowsEnableMode};
 use std::sync::Arc;
 
-/// The Tauri app's login item had the same name (`productName`), so an
+/// Earlier releases registered their login item under the same name, so an
 /// existing entry is found and replaced rather than duplicated.
 const APP_NAME: &str = "Radar";
 
@@ -59,7 +59,7 @@ pub fn set(enabled: bool) -> anyhow::Result<()> {
 }
 
 /// Points an enabled login item at this executable: the entry an older
-/// build registered (the Tauri app, or an install somewhere else) may start
+/// build registered (an earlier release, or an install elsewhere) may start
 /// a path that is gone or holds the old app. Enabling rewrites the entry in
 /// place, so running this on every launch changes nothing once it matches.
 /// A disabled item stays off. Blocks; returns whether it rewrote the entry.

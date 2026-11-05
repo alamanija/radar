@@ -1,6 +1,6 @@
 //! What each full-list resource last synced, per account, persisted beside
 //! the store as `sync-state.json`. It is a file of its own because
-//! `radar.json` keeps exactly the keys the Tauri app wrote.
+//! `radar.json` keeps exactly its established keys.
 //!
 //! At the start of a sync session the digests seed each resource's
 //! divergence baseline ([`SyncedResource::seed_last_synced`]). A local value
@@ -30,8 +30,9 @@
 //! resource keeps its `digests` entry only when the store loaded cleanly and
 //! its loaded value matches its `saved` entry. Otherwise the entry is dropped
 //! and that resource's first pull takes the server's copy: a missing,
-//! unparseable or truncated `radar.json`, one another writer replaced (a
-//! Tauri downgrade), or a sidecar whose write failed after the store's.
+//! unparseable or truncated `radar.json`, one another writer replaced (an
+//! older build after a downgrade), or a sidecar whose write failed after the
+//! store's.
 //! A future change to a resource's `stable_key` also fails the `saved`
 //! comparison and falls back to the server's copy, so the file needs no
 //! format version.
@@ -397,7 +398,7 @@ mod tests {
     }
 
     fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tauri_radar.json")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_store.json")
     }
 
     /// What a save wrote is what the next load reads: `saved` matches the
@@ -429,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn tauri_store_digests_round_trip() {
+    fn legacy_store_digests_round_trip() {
         assert_round_trips(&crate::store::load(&fixture()));
     }
 

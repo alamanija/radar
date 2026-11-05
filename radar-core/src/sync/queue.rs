@@ -1,11 +1,11 @@
-//! Persistent offline queue for mutating sync requests. Port of
-//! `src/syncQueue.js`.
+//! Persistent offline queue for mutating sync requests.
 //!
-//! Items are stored in the store's `sync-queue` key with the JS key names
-//! (`groupKey`, `accountId`, `queuedAt`) so a queue written by the React app
-//! drains here. The Authorization header is never stored; it is minted per
-//! item at drain time, so a token that expired while the item sat in the
-//! queue is refreshed by [`Session`](crate::auth::Session) before the send.
+//! Items are stored in the store's `sync-queue` key with the established key
+//! names (`groupKey`, `accountId`, `queuedAt`) so a queue written by earlier
+//! releases still loads and drains. The Authorization header is never
+//! stored; it is minted per item at drain time, so a token that expired while
+//! the item sat in the queue is refreshed by
+//! [`Session`](crate::auth::Session) before the send.
 
 use super::{parse_method, SyncClient, SyncError};
 use futures::future::BoxFuture;
@@ -49,7 +49,7 @@ fn random_id() -> String {
     )
 }
 
-/// One queued mutation, in the JS item shape.
+/// One queued mutation, in the stored item shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedReq {
@@ -93,8 +93,8 @@ impl QueuedReq {
     }
 }
 
-/// JS stored headers as an object; accept that or `[name, value]` pairs and
-/// always write the object form.
+/// Older items store headers as an object; accept that or `[name, value]`
+/// pairs and always write the object form.
 mod header_map {
     use serde::ser::SerializeMap;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -875,7 +875,7 @@ mod tests {
             .with_sleep(sleep)
             .with_queue(vec![item("/sync/prefs", "p", Some("user_1"))]);
         let report = c.drain().await;
-        // JS semantics: `tries > MAX_TRIES` gives up, so 1 + 8 retries.
+        // `tries > MAX_TRIES` gives up, so 1 + 8 retries.
         put.assert_calls_async(9).await;
         let ms: Vec<u64> = slept
             .lock()
@@ -988,8 +988,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_js_queue_item_deserializes() {
-        // Shape written by src/syncQueue.js (see tests/fixtures/tauri_radar.json).
+    fn legacy_queue_item_deserializes() {
+        // Shape written by earlier releases (see tests/fixtures/legacy_store.json).
         let raw = json!({
             "id": "6f1c5d2e-1b7a-4a39-9d64-2f0c8e1a7b55",
             "path": "/sync/article-states",
@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(r.queued_at, 1767261005000);
         assert_eq!(serde_json::to_value(&r).unwrap(), raw);
 
-        // Missing optional keys (JS `groupKey: undefined`, `accountId: null`).
+        // Missing optional keys (no `groupKey`, `accountId: null`).
         let min: QueuedReq = serde_json::from_value(json!({
             "id": "x", "path": "/sync/prefs", "method": "PUT", "body": {},
             "headers": {}, "accountId": null, "tries": 0, "queuedAt": 1
@@ -1039,7 +1039,7 @@ mod tests {
         // The store fixture's queue parses as a whole.
         let fixture = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/tauri_radar.json"),
+                .join("tests/fixtures/legacy_store.json"),
         )
         .unwrap();
         let v: Value = serde_json::from_str(&fixture).unwrap();

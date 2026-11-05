@@ -1,11 +1,11 @@
-//! Port of `src/views/BriefingView.jsx`: greeting, summary line, stats
+//! The briefing view: greeting, summary line, stats
 //! strip, error banner, category chips and the article grid or list (or the
 //! first-run tutorial / loading skeletons).
 //!
-//! # Differences from the CSS
-//! - `grid-template-columns: repeat(auto-fill, minmax(320px, 1fr))` needs
-//!   the container width, so the column count is derived from the window
-//!   size each frame ([`grid_columns`]).
+//! # Layout notes
+//! - The grid fits as many equal columns of at least 320 px as it can. That
+//!   needs the container width, so the column count is derived from the
+//!   window size each frame ([`grid_columns`]).
 //! - Lists of more than [`VIRTUAL_MIN`] rows render through a virtual list
 //!   with its own scroll area, because GPUI cannot virtualize inside the
 //!   page's scroll container.
@@ -33,7 +33,7 @@ use std::rc::Rc;
 
 /// List mode switches to a virtual list above this many articles.
 pub const VIRTUAL_MIN: usize = 50;
-/// Page content width limit and horizontal padding (`viewStyles.wrap`).
+/// Page content width limit and horizontal padding.
 const MAX_WIDTH: f32 = 1240.;
 const GUTTER: f32 = 32.;
 const GRID_GAP: f32 = 14.;
@@ -42,7 +42,7 @@ const CARD_MIN_WIDTH: f32 = 320.;
 const SKELETON_CARDS: usize = 8;
 const SKELETON_ROWS: usize = 10;
 
-/// `viewStyles.wrap` + `viewStyles.title`: the frame every view shares
+/// The frame every view shares
 /// (32 px gutter, 1240 max width centered, serif 28/500 title). The
 /// title's id is `content-title`.
 pub fn page_frame(
@@ -82,7 +82,7 @@ pub fn page_frame_with(
         .children(children)
 }
 
-/// `viewStyles.subtitle`: the muted line under the title. `id` is also
+/// The muted line under the title. `id` is also
 /// its accessible label's owner.
 pub fn view_subtitle(
     id: &'static str,
@@ -251,7 +251,7 @@ fn errors_banner(errors: &[SourceError], t: &Tokens) -> impl IntoElement {
         .child(StyledText::new(text).with_highlights([(0..head.len(), strong)]))
 }
 
-/// One `.pill`.
+/// One category chip (a pill).
 fn chip(
     id: SharedString,
     label: &str,
@@ -349,7 +349,7 @@ fn chips(
     row
 }
 
-/// `viewStyles.list`: the bordered box around list rows.
+/// The bordered box around list rows.
 fn list_box(t: &Tokens) -> Div {
     div()
         .overflow_hidden()
@@ -359,7 +359,7 @@ fn list_box(t: &Tokens) -> Div {
         .bg(t.surface)
 }
 
-/// `viewStyles.listHead`.
+/// The list's column header row.
 fn list_head(t: &Tokens) -> Div {
     let label = |col: Col, text: &'static str| {
         cell(col)

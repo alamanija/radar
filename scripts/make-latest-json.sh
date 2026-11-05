@@ -10,10 +10,10 @@
 #   *-setup.exe(.sig)      -> windows-x86_64   (format nsis)
 #   *.app.tar.gz(.sig)     -> darwin-aarch64   (format app)
 #
-# The shape is Tauri's static manifest (version, notes, pub_date,
-# platforms.<os>-<arch>.{signature,url}) so already-installed Tauri builds
-# can read it; cargo-packager-updater additionally needs `format`, which
-# Tauri ignores. Needs `jq`. Fails if either platform is missing, so a
+# The shape (version, notes, pub_date, platforms.<os>-<arch>.{signature,url})
+# stays readable by the updater in already-installed older builds;
+# cargo-packager-updater additionally needs `format`, which older builds
+# ignore. Needs `jq`. Fails if either platform is missing, so a
 # half-built release is never published.
 set -euo pipefail
 

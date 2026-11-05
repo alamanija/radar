@@ -1,5 +1,4 @@
-//! System notification when a briefing brings new articles. Port of
-//! `src/notify.js` and the scheduler banner of `src-tauri/src/scheduler.rs`.
+//! System notification when a briefing brings new articles.
 //!
 //! The model decides when to post: new articles, and no Radar window has
 //! focus (if the user is already looking, the re-rendered briefing is the
@@ -14,7 +13,7 @@ use radar_core::model::BriefingOutcome;
 pub const TAG: &str = "briefing";
 pub const TITLE: &str = "Radar briefing ready";
 
-/// `"{n} new · {total} total across {s} source(s)"`, the `notify.js` copy.
+/// `"{n} new · {total} total across {s} source(s)"`.
 fn body(o: &BriefingOutcome) -> String {
     let plural = if o.source_count == 1 { "" } else { "s" };
     format!(
