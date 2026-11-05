@@ -66,6 +66,15 @@ icons = [
     "assets/icons/icon.ico",
 ]
 
+[package.metadata.packager.macos]
+# Ad-hoc signature over the whole bundle (Info.plist and resources sealed).
+# Without it only the linker's signature on the executable exists, and
+# Gatekeeper reports a downloaded copy as "damaged" with no way to open it.
+# Ad-hoc is not notarized: the first launch still needs System Settings >
+# Privacy & Security > Open Anyway. Replace with a Developer ID identity to
+# notarize.
+signing-identity = "-"
+
 [package.metadata.packager.nsis]
 # Same per-user install the Tauri build used.
 installer-mode = "currentUser"

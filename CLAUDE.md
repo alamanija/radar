@@ -107,7 +107,7 @@ git push && git push --tags
 
 Never edit crate versions by hand per crate; they inherit the workspace version.
 
-**One-time setup:** repo secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the existing minisign key, which cargo-packager reads via `CARGO_PACKAGER_SIGN_PRIVATE_KEY*`); repo variables `RADAR_CLERK_FRONTEND_API` and `RADAR_CLERK_CLIENT_ID` (compile-time client config; a repo secret of the same name also works, the variable wins; `RADAR_SERVER_URL` is set in the workflow). Without Apple signing secrets macOS builds are unsigned (right-click > Open). Rolling back: edit the bad release back to draft or delete it so `releases/latest` resolves to the prior one; clients that already applied it need a fix-forward release.
+**One-time setup:** repo secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the existing minisign key, which cargo-packager reads via `CARGO_PACKAGER_SIGN_PRIVATE_KEY*`); repo variables `RADAR_CLERK_FRONTEND_API` and `RADAR_CLERK_CLIENT_ID` (compile-time client config; a repo secret of the same name also works, the variable wins; `RADAR_SERVER_URL` is set in the workflow). macOS builds are ad-hoc signed (`[package.metadata.packager.macos] signing-identity = "-"`) but not notarized: a downloaded copy's first launch needs System Settings > Privacy & Security > Open Anyway. Without the bundle signature Gatekeeper calls a downloaded copy "damaged". Rolling back: edit the bad release back to draft or delete it so `releases/latest` resolves to the prior one; clients that already applied it need a fix-forward release.
 
 ## Known gaps
 
