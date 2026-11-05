@@ -187,7 +187,8 @@ impl SyncResource for SourcesRes {
 
 // ---- prefs -----------------------------------------------------------------
 
-/// The synced prefs subset. `sidebarCollapsed` and `view` stay per-device.
+/// The synced prefs subset. `sidebarCollapsed`, `view` and `unreadOnly` stay
+/// per-device.
 fn synced_prefs(p: &Prefs) -> Value {
     json!({
         "theme": p.theme,
@@ -223,6 +224,7 @@ impl SyncResource for PrefsRes {
         Prefs {
             sidebar_collapsed: prev.sidebar_collapsed,
             view: prev.view,
+            unread_only: prev.unread_only,
             ..p
         }
     }
@@ -392,6 +394,7 @@ mod tests {
             theme: Theme::Dark,
             sidebar_collapsed: true,
             view: View::Sources,
+            unread_only: true,
             ..Prefs::default()
         };
         let body = PrefsRes::push_body(&local);
@@ -401,6 +404,7 @@ mod tests {
         assert_eq!(body["prefs"]["staleAfterDays"], 0);
         assert!(body["prefs"].get("sidebarCollapsed").is_none());
         assert!(body["prefs"].get("view").is_none());
+        assert!(body["prefs"].get("unreadOnly").is_none());
         assert_eq!(body["prefs"]["theme"], "dark");
 
         let merged = PrefsRes::from_remote(
@@ -420,6 +424,7 @@ mod tests {
         // Per-device keys stay local.
         assert!(merged.sidebar_collapsed);
         assert_eq!(merged.view, View::Sources);
+        assert!(merged.unread_only);
         // Changing a per-device key isn't a push.
         let mut moved = local.clone();
         moved.view = View::Archive;

@@ -8,6 +8,7 @@
 use super::card::{apply_event, CardEvent, CardHandler};
 use super::icon::IconName;
 use super::icon_button;
+use crate::app_model::AppModel;
 use crate::theme;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::{
@@ -16,6 +17,9 @@ use gpui_kit::{
 };
 use radar_core::types::Article;
 use std::rc::Rc;
+
+/// A handler that also gets the article.
+type Emit = Rc<dyn Fn(CardEvent, &mut Window, &mut App, &Article)>;
 
 /// Widths of the fixed columns; the headline column (third) takes the rest.
 const COL_DOT: f32 = 20.;
@@ -93,7 +97,12 @@ impl RenderOnce for Row {
             read_only,
             on_event,
         } = self;
-        let emit = Rc::new(
+        // Live age and the category's current label and color.
+        let a = AppModel::global(cx)
+            .read(cx)
+            .model
+            .for_display(&a, chrono::Utc::now().timestamp_millis());
+        let emit: Emit = Rc::new(
             move |ev: CardEvent, w: &mut Window, cx: &mut App, a: &Article| match &on_event {
                 Some(h) => h(ev, w, cx),
                 None => apply_event(cx, a, ev, read_only),
@@ -149,15 +158,10 @@ impl RenderOnce for Row {
             .opacity(if a.read { 0.6 } else { 1. })
             .hover(move |s| s.bg(surface_2))
             .on_click({
-                let a = a.clone();
-                move |_, w, cx| emit(CardEvent::ToggleRead, w, cx, &a)
+                let (emit, a) = (emit.clone(), a.clone());
+                move |_, w, cx| emit(CardEvent::Open, w, cx, &a)
             })
-            .child(
-                cell(Col::Dot).children(
-                    t.dot_for(&a.accent)
-                        .map(|c| div().flex_none().size(px(8.)).rounded_full().bg(c)),
-                ),
-            )
+            .child(read_toggle(&a, &t, emit))
             .child(
                 cell(Col::Source)
                     .font_family(theme::FONT_MONO)
@@ -199,4 +203,31 @@ impl RenderOnce for Row {
             )
             .child(cell(Col::Actions).child(bookmark))
     }
+}
+
+/// The dot column as the read toggle: a dot in the category color while
+/// unread, a hollow ring once read.
+fn read_toggle(a: &Article, t: &theme::Tokens, emit: Emit) -> impl IntoElement {
+    let color = t.dot_for(&a.accent).unwrap_or(t.text_3);
+    let dot = div().flex_none().size(px(8.)).rounded_full();
+    let dot = if a.read {
+        dot.border_1().border_color(color)
+    } else {
+        dot.bg(color)
+    };
+    let a = a.clone();
+    cell(Col::Dot)
+        .id(part_id(a.id, "read"))
+        .test_support()
+        .aria_label(if a.read {
+            "Mark as unread"
+        } else {
+            "Mark as read"
+        })
+        .cursor_pointer()
+        .child(dot)
+        .on_click(move |_, w, cx| {
+            cx.stop_propagation();
+            emit(CardEvent::ToggleRead, w, cx, &a)
+        })
 }

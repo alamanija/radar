@@ -17,6 +17,7 @@ use crate::components::search_palette::SearchPalette;
 use crate::components::{header, sidebar, tweaks};
 use crate::theme;
 use crate::views::archive::ArchiveView;
+use crate::views::briefing::BriefingView;
 use crate::views::categories::{self, CategoriesView};
 use crate::views::settings::{self, SettingsView};
 use crate::views::sources::{self, SourcesView};
@@ -49,6 +50,8 @@ pub struct Workspace {
     pub search_open: bool,
     pub tweaks_open: bool,
     pub sources_intent: Option<SourcesIntent>,
+    /// What the Briefing view's "Unread only" filter keeps on screen.
+    pub briefing: BriefingView,
     /// Drill-in state of the Archive view.
     pub archive: ArchiveView,
     /// Filter and edit-row state of the Sources view.
@@ -119,6 +122,7 @@ impl Workspace {
             search_open: false,
             tweaks_open: false,
             sources_intent: None,
+            briefing: BriefingView::default(),
             archive: ArchiveView::default(),
             sources: SourcesView::default(),
             categories: CategoriesView::default(),
@@ -150,6 +154,11 @@ impl Render for Workspace {
         let entity = AppModel::global(cx);
         // Per-view state lives only while its view is shown.
         let shown = entity.read(cx).model.prefs.view;
+        if shown == View::Briefing {
+            self.briefing.prepare(&entity.read(cx).model);
+        } else {
+            self.briefing.reset();
+        }
         if shown != View::Archive {
             self.archive.selected_id = None;
         }
@@ -235,7 +244,7 @@ fn content(
     cx: &Context<Workspace>,
 ) -> Div {
     match view {
-        View::Briefing => briefing::render(app, window, cx),
+        View::Briefing => briefing::render(app, &ws.briefing, window, cx),
         View::Saved => saved::render(app, window, cx),
         View::Archive => archive::render(&ws.archive, app, window, cx),
         View::Sources => sources::render(&ws.sources, app, cx),

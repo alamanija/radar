@@ -46,9 +46,8 @@ pub type CardHandler = Rc<dyn Fn(CardEvent, &mut Window, &mut App)>;
 /// A handler that also gets the article (what the card closures need).
 type Emit = Rc<dyn Fn(CardEvent, &mut Window, &mut App, &Article)>;
 
-/// The default effect of a [`CardEvent`] on the global model. `Open` opens
-/// the article's URL and changes nothing else (it does not mark the
-/// article read).
+/// The default effect of a [`CardEvent`] on the global model. `Open` marks
+/// the article read (unless `read_only`) and opens its URL, if it has one.
 pub fn apply_event(cx: &mut App, article: &Article, event: CardEvent, read_only: bool) {
     let id = article.id;
     let model = AppModel::global(cx);
@@ -57,10 +56,12 @@ pub fn apply_event(cx: &mut App, article: &Article, event: CardEvent, read_only:
         CardEvent::ToggleRead => model.update(cx, |m, cx| m.toggle_read(cx, id)),
         CardEvent::ToggleBookmark => model.update(cx, |m, cx| m.toggle_bookmark(cx, id)),
         CardEvent::Open => {
-            if article.url.is_empty() {
-                return;
+            if !read_only {
+                model.update(cx, |m, cx| m.mark_opened(cx, id));
             }
-            cx.open_url(&article.url);
+            if !article.url.is_empty() {
+                cx.open_url(&article.url);
+            }
         }
     }
 }
@@ -127,13 +128,16 @@ fn initials(source: &str) -> String {
 impl RenderOnce for Card {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let t = *theme::t(cx);
-        let theme_mode = AppModel::global(cx).read(cx).model.prefs.theme;
+        let model = &AppModel::global(cx).read(cx).model;
+        let theme_mode = model.prefs.theme;
         let Card {
             article: a,
             opts,
             on_event,
             scope,
         } = self;
+        // Live age and the category's current label and color.
+        let a = model.for_display(&a, chrono::Utc::now().timestamp_millis());
         let ns: &str = &scope;
         let emit = move |ev: CardEvent, w: &mut Window, cx: &mut App, a: &Article| match &on_event {
             Some(h) => h(ev, w, cx),
@@ -161,7 +165,7 @@ impl RenderOnce for Card {
             .hover(move |s| s.border_color(border_strong).shadow(hover_shadow.clone()))
             .on_click({
                 let (emit, a) = (emit.clone(), a.clone());
-                move |_, w, cx| emit(CardEvent::ToggleRead, w, cx, &a)
+                move |_, w, cx| emit(CardEvent::Open, w, cx, &a)
             });
         if opts.show_accent {
             if let Some(c) = accent {
@@ -218,6 +222,9 @@ fn body(
         .child(div().flex_none().child("·"))
         .child(
             div()
+                .id(part_id(ns, a.id, "category"))
+                .test_support()
+                .aria_label(a.category_label.to_uppercase())
                 .min_w_0()
                 .flex_shrink(1.)
                 .truncate()
@@ -226,6 +233,9 @@ fn body(
         )
         .child(
             div()
+                .id(part_id(ns, a.id, "time"))
+                .test_support()
+                .aria_label(a.published.clone())
                 .flex_none()
                 .ml_auto()
                 .pl(px(6.))
@@ -290,6 +300,39 @@ fn body(
             emit(CardEvent::ToggleBookmark, w, cx, &a)
         })
     };
+    // "● New" / "Read": the read toggle.
+    let read_toggle = {
+        let (emit, a) = (emit.clone(), a.clone());
+        let (text_3, text) = (t.text_3, t.text);
+        div()
+            .id(part_id(ns, a.id, "read"))
+            .test_support()
+            .aria_label(if a.read {
+                "Mark as unread"
+            } else {
+                "Mark as read"
+            })
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .text_color(text_3)
+            .hover(move |s| s.text_color(text))
+            .children((!a.read).then(|| {
+                div()
+                    .id(part_id(ns, a.id, "unread-dot"))
+                    .test_support()
+                    .flex_none()
+                    .size(px(7.))
+                    .rounded_full()
+                    .bg(t.accent)
+            }))
+            .child(if a.read { "Read" } else { "New" })
+            .on_click(move |_, w, cx| {
+                cx.stop_propagation();
+                emit(CardEvent::ToggleRead, w, cx, &a)
+            })
+    };
     let open = {
         let (emit, a) = (emit, a.clone());
         let has_url = !a.url.is_empty();
@@ -320,16 +363,7 @@ fn body(
         .border_color(t.border)
         .text_size(px(12.))
         .text_color(t.text_3)
-        .children((!a.read).then(|| {
-            div()
-                .id(part_id(ns, a.id, "unread-dot"))
-                .test_support()
-                .flex_none()
-                .size(px(7.))
-                .rounded_full()
-                .bg(t.accent)
-        }))
-        .child(if a.read { "Read" } else { "New" })
+        .child(read_toggle)
         .child(
             div()
                 .ml_auto()
@@ -700,12 +734,15 @@ mod tests {
             .into_any_element()
         });
         h.add_live_article(cx, article(1));
-        h.click(cx, "card-1");
+        h.click(cx, "card-1-read");
         h.click(cx, "card-1-bookmark");
         h.live_article(cx, |a| assert!(!a.read && !a.bookmarked));
-        h.click(cx, "card-1-open");
+        h.click(cx, "card-1");
         assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
-        h.live_article(cx, |a| assert!(!a.read, "opening never changes read state"));
+        h.click(cx, "card-1-open");
+        h.live_article(cx, |a| {
+            assert!(!a.read, "opening a read-only card changes nothing")
+        });
     }
 
     #[gpui_kit::test]
@@ -721,16 +758,35 @@ mod tests {
                 .into_any_element()
         });
         h.click(cx, "card-1");
+        h.click(cx, "card-1-read");
         h.click(cx, "card-1-bookmark");
         h.click(cx, "card-1-open");
         assert_eq!(
             *seen.borrow(),
             [
+                CardEvent::Open,
                 CardEvent::ToggleRead,
                 CardEvent::ToggleBookmark,
                 CardEvent::Open
             ]
         );
+    }
+
+    #[gpui_kit::test]
+    fn read_toggle_is_labelled_for_its_action(cx: &mut TestAppContext) {
+        let label = |h: &Host, cx: &mut TestAppContext| {
+            h.with_window(cx, |w| w.find("card-1-read").label().map(str::to_owned))
+        };
+        let h = show(cx, article(1));
+        assert_eq!(label(&h, cx).as_deref(), Some("Mark as read"));
+        let h = show(
+            cx,
+            Article {
+                read: true,
+                ..article(1)
+            },
+        );
+        assert_eq!(label(&h, cx).as_deref(), Some("Mark as unread"));
     }
 
     #[gpui_kit::test]

@@ -254,6 +254,65 @@ impl RadarModel {
         })
     }
 
+    /// Sets the read flag; `None` when the article is unknown or already
+    /// has it (nothing to save or PATCH).
+    pub fn set_read(&mut self, id: u64, read: bool) -> Option<(String, ArticleState)> {
+        if self.articles.iter().find(|a| a.id == id)?.read == read {
+            return None;
+        }
+        self.toggle(id, |a| ArticleState {
+            read,
+            bookmarked: a.bookmarked,
+        })
+    }
+
+    /// Marks every unread article in the active category read; returns the
+    /// states that changed.
+    pub fn mark_all_read(&mut self) -> Vec<(String, ArticleState)> {
+        let ids: Vec<u64> = self
+            .articles
+            .iter()
+            .filter(|a| !a.read && self.in_active_category(a))
+            .map(|a| a.id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.set_read(id, true))
+            .collect()
+    }
+
+    fn in_active_category(&self, a: &Article) -> bool {
+        self.active_category == "all" || a.category == self.active_category
+    }
+
+    /// The briefing's articles under the category filter and, with
+    /// `unread_only`, only unread ones plus `kept` (articles read while the
+    /// filter was on, which stay until the caller resets the set).
+    pub fn briefing_articles(&self, kept: Option<&HashSet<u64>>) -> Vec<&Article> {
+        self.articles
+            .iter()
+            .filter(|a| self.in_active_category(a))
+            .filter(|a| {
+                !self.prefs.unread_only || !a.read || kept.is_some_and(|k| k.contains(&a.id))
+            })
+            .collect()
+    }
+
+    /// A copy of `a` for display: the age from `publishedAt` at `now_ms`
+    /// (the stored text was written at fetch time), and the label and color
+    /// of its category as it is now. Without a timestamp, or for a category
+    /// that no longer exists, the stored values stand.
+    pub fn for_display(&self, a: &Article, now_ms: i64) -> Article {
+        let mut d = a.clone();
+        if let Some(t) = a.published_at {
+            d.published = crate::text::relative_time_ms(Some(t.timestamp_millis()), now_ms);
+        }
+        if let Some(c) = self.categories.iter().find(|c| c.id == a.category) {
+            d.category_label = c.label.clone();
+            d.accent = c.accent.clone();
+        }
+        d
+    }
+
     // ---- briefing ----
 
     pub fn begin_briefing(&mut self) {
@@ -749,5 +808,108 @@ mod tests {
         let snap = m.to_snapshot(vec![serde_json::json!(1)]);
         assert_eq!(snap.sync_queue.len(), 1);
         assert_eq!(RadarModel::from_snapshot(snap).sources.len(), 1);
+    }
+
+    fn in_cat(id: u64, category: &str, read: bool) -> Article {
+        Article {
+            category: category.into(),
+            read,
+            ..art(id, 1)
+        }
+    }
+
+    #[test]
+    fn set_read_reports_only_changes() {
+        let mut m = model();
+        m.articles = vec![in_cat(1, "c", false)];
+        let (key, s) = m.set_read(1, true).unwrap();
+        assert_eq!(key, "1");
+        assert!(s.read && m.articles[0].read);
+        assert_eq!(m.article_states["1"], s);
+        assert_eq!(m.set_read(1, true), None, "already read");
+        assert_eq!(m.set_read(9, true), None, "unknown id");
+    }
+
+    #[test]
+    fn mark_all_read_follows_the_category_filter() {
+        let mut m = model();
+        m.articles = vec![
+            in_cat(1, "a", false),
+            in_cat(2, "a", true),
+            in_cat(3, "b", false),
+        ];
+        m.active_category = "a".into();
+        let changed = m.mark_all_read();
+        assert_eq!(changed.len(), 1, "only the unread one in `a`");
+        assert_eq!(changed[0].0, "1");
+        assert!(!m.articles[2].read, "other categories are untouched");
+
+        m.active_category = "all".into();
+        let changed = m.mark_all_read();
+        assert_eq!(
+            changed.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+            ["3"]
+        );
+        assert!(m.articles.iter().all(|a| a.read));
+        assert!(m.mark_all_read().is_empty());
+    }
+
+    #[test]
+    fn briefing_articles_filter_by_category_and_unread() {
+        let mut m = model();
+        m.articles = vec![
+            in_cat(1, "a", false),
+            in_cat(2, "a", true),
+            in_cat(3, "b", false),
+            in_cat(4, "a", true),
+        ];
+        let ids = |v: Vec<&Article>| v.iter().map(|a| a.id).collect::<Vec<_>>();
+        assert_eq!(ids(m.briefing_articles(None)), [1, 2, 3, 4]);
+        m.active_category = "a".into();
+        assert_eq!(ids(m.briefing_articles(None)), [1, 2, 4]);
+
+        m.prefs.unread_only = true;
+        assert_eq!(ids(m.briefing_articles(None)), [1]);
+        // Opened while the filter was on: kept until the set is reset.
+        let kept = HashSet::from([4]);
+        assert_eq!(ids(m.briefing_articles(Some(&kept))), [1, 4]);
+    }
+
+    #[test]
+    fn for_display_uses_live_time_and_current_category() {
+        let mut m = model();
+        m.categories = vec![Category {
+            id: "c".into(),
+            label: "Renamed".into(),
+            description: String::new(),
+            accent: "olive".into(),
+        }];
+        let now = DateTime::parse_from_rfc3339("2026-11-05T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let a = Article {
+            published: "2h ago".into(),
+            published_at: Some(now - chrono::Duration::days(3)),
+            ..art(1, 1)
+        };
+        let d = m.for_display(&a, now.timestamp_millis());
+        assert_eq!(
+            d.published, "3d ago",
+            "from the timestamp, not the stored text"
+        );
+        assert_eq!(d.category_label, "Renamed");
+        assert_eq!(d.accent, "olive");
+        assert_eq!(d.id, a.id);
+
+        // No timestamp or an unknown category: the stored values stand.
+        let b = Article {
+            category: "gone".into(),
+            published: "recent".into(),
+            ..art(2, 1)
+        };
+        let d = m.for_display(&b, now.timestamp_millis());
+        assert_eq!(d.published, "recent");
+        assert_eq!(d.category_label, "C");
+        assert_eq!(d.accent, "ink");
     }
 }

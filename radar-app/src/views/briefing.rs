@@ -10,6 +10,7 @@
 //!   with its own scroll area, because GPUI cannot virtualize inside the
 //!   page's scroll container.
 
+use super::form::{Pill, PillStyle};
 use super::onboarding;
 use crate::app_model::AppModel;
 use crate::components::card::{Card, CardOpts};
@@ -27,8 +28,10 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled, StyledText, Window,
 };
+use radar_core::model::RadarModel;
 use radar_core::text;
 use radar_core::types::{Article, Category, SourceError, ViewMode};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// List mode switches to a virtual list above this many articles.
@@ -116,11 +119,12 @@ fn rich(text: String, bold: Option<std::ops::Range<usize>>, t: &Tokens) -> Style
 }
 
 /// The summary line below the greeting; the second value is the same
-/// sentence without markup.
+/// sentence without markup. `last_run` ("2h ago") is appended when known.
 fn subtitle(
     scanning: bool,
     articles: &[Article],
     show_tutorial: bool,
+    last_run: Option<String>,
     t: &Tokens,
 ) -> (AnyElement, String) {
     let unread = articles.iter().filter(|a| !a.read).count();
@@ -145,76 +149,14 @@ fn subtitle(
         let lead = "Your briefing surfaced ";
         let n = format!("{} articles", articles.len());
         let plural = if sources == 1 { "" } else { "s" };
-        let text = format!("{lead}{n} across {sources} source{plural} · {unread} unread.");
+        let updated = last_run
+            .map(|r| format!(" · updated {r}"))
+            .unwrap_or_default();
+        let text = format!("{lead}{n} across {sources} source{plural} · {unread} unread{updated}.");
         (text, Some(lead.len()..lead.len() + n.len()))
     };
     let el = rich(text.clone(), bold, t).into_any_element();
     (el, text)
-}
-
-fn stat(id: &'static str, label: &'static str, value: String, last: bool, t: &Tokens) -> Div {
-    let mut value_el = div()
-        .id(id)
-        .test_support()
-        .aria_label(value.clone())
-        .text_size(px(22.))
-        .font_weight(FontWeight::MEDIUM)
-        .child(value);
-    if last {
-        // `Last run`: 15 px mono in text-2.
-        value_el = value_el
-            .text_size(px(15.))
-            .text_color(t.text_2)
-            .font_family(theme::FONT_MONO);
-    }
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .gap(px(4.))
-        .px(px(18.))
-        .py(px(14.))
-        .when(!last, |d| d.border_r_1().border_color(t.border))
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(t.text_3)
-                .child(label.to_uppercase()),
-        )
-        .child(value_el)
-}
-
-fn stat_strip(articles: &[Article], last_run: String, t: &Tokens) -> Div {
-    div()
-        .flex()
-        .mb(px(22.))
-        .overflow_hidden()
-        .border_1()
-        .border_color(t.border)
-        .rounded(t.radius)
-        .bg(t.surface)
-        .child(stat(
-            "stat-fetched",
-            "Fetched",
-            articles.len().to_string(),
-            false,
-            t,
-        ))
-        .child(stat(
-            "stat-unread",
-            "Unread",
-            articles.iter().filter(|a| !a.read).count().to_string(),
-            false,
-            t,
-        ))
-        .child(stat(
-            "stat-saved",
-            "Saved",
-            articles.iter().filter(|a| a.bookmarked).count().to_string(),
-            false,
-            t,
-        ))
-        .child(stat("stat-last-run", "Last run", last_run, true, t))
 }
 
 fn errors_banner(errors: &[SourceError], t: &Tokens) -> impl IntoElement {
@@ -317,23 +259,15 @@ fn chips(
             AppModel::mutate(cx, |m| m.active_category = id)
         }
     };
-    let mut row = div()
-        .flex()
-        .flex_wrap()
-        .gap(px(6.))
-        .mb(px(22.))
-        .pb(px(18.))
-        .border_b_1()
-        .border_color(t.border)
-        .child(chip(
-            "chip-all".into(),
-            "All",
-            articles.len(),
-            None,
-            active == "all",
-            pick("all".into()),
-            t,
-        ));
+    let mut row = div().flex().flex_wrap().gap(px(6.)).child(chip(
+        "chip-all".into(),
+        "All",
+        articles.len(),
+        None,
+        active == "all",
+        pick("all".into()),
+        t,
+    ));
     for c in categories {
         let count = articles.iter().filter(|a| a.category == c.id).count();
         row = row.child(chip(
@@ -347,6 +281,49 @@ fn chips(
         ));
     }
     row
+}
+
+/// The row above the articles: category chips on the left (when there are
+/// categories), "Unread only" and "Mark all read" on the right.
+fn filter_bar(m: &RadarModel, t: &Tokens, cx: &Context<Workspace>) -> impl IntoElement {
+    let unread_only = Pill::new("briefing-unread-only", "Unread only")
+        .style(if m.prefs.unread_only {
+            PillStyle::Active
+        } else {
+            PillStyle::Plain
+        })
+        .on_click(|_, _, cx| AppModel::mutate(cx, |m| m.prefs.unread_only ^= true))
+        .render(t, []);
+    let any_unread = m.briefing_articles(None).iter().any(|a| !a.read);
+    let mark_all = Pill::new("briefing-mark-all-read", "Mark all read")
+        .on_click(cx.listener(|ws, _, _, cx| {
+            // Caught up: the unread-only list empties instead of keeping
+            // what was just marked.
+            ws.briefing.reset();
+            AppModel::global(cx).update(cx, |m, cx| m.mark_all_read(cx));
+        }))
+        .enabled(any_unread)
+        .render(t, []);
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(12.))
+        .mb(px(22.))
+        .pb(px(18.))
+        .border_b_1()
+        .border_color(t.border)
+        .when(!m.categories.is_empty(), |d| {
+            d.child(chips(&m.categories, &m.articles, &m.active_category, t))
+        })
+        .child(
+            div()
+                .ml_auto()
+                .flex()
+                .gap(px(6.))
+                .child(unread_only)
+                .child(mark_all),
+        )
 }
 
 /// The bordered box around list rows.
@@ -435,8 +412,50 @@ fn skeleton_list(t: &Tokens) -> AnyElement {
         .into_any_element()
 }
 
+/// Per-view state of the briefing: with "Unread only" on, the articles
+/// that were unread when you started looking, so one you open stays put
+/// instead of vanishing. Taken again when the category or the briefing run
+/// changes, and dropped when the filter goes off or the view is left.
+#[derive(Default)]
+pub struct BriefingView {
+    /// `(category, last run, ids)`.
+    kept: Option<(String, Option<i64>, HashSet<u64>)>,
+}
+
+impl BriefingView {
+    pub fn reset(&mut self) {
+        self.kept = None;
+    }
+
+    /// Call on every frame the briefing is shown.
+    pub fn prepare(&mut self, m: &RadarModel) {
+        if !m.prefs.unread_only {
+            self.kept = None;
+            return;
+        }
+        let run = m.last_run_at_ms();
+        let current = self
+            .kept
+            .as_ref()
+            .is_some_and(|(cat, r, _)| *cat == m.active_category && *r == run);
+        if !current {
+            let ids = m.briefing_articles(None).iter().map(|a| a.id).collect();
+            self.kept = Some((m.active_category.clone(), run, ids));
+        }
+    }
+
+    fn kept(&self) -> Option<&HashSet<u64>> {
+        self.kept.as_ref().map(|(_, _, ids)| ids)
+    }
+}
+
 /// Renders the briefing page.
-pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
+pub fn render(
+    app: &AppModel,
+    view: &BriefingView,
+    window: &Window,
+    cx: &Context<Workspace>,
+) -> Div {
     let t = *theme::t(cx);
     let m = &app.model;
     let prefs = &m.prefs;
@@ -451,7 +470,10 @@ pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
         && m.sources.is_empty()
         && m.archives.is_empty();
 
-    let (subtitle_el, subtitle_text) = subtitle(m.scanning, articles, show_tutorial, &t);
+    let last_run = m
+        .last_run_at_ms()
+        .map(|ms| text::relative_time_ms(Some(ms), Utc::now().timestamp_millis()));
+    let (subtitle_el, subtitle_text) = subtitle(m.scanning, articles, show_tutorial, last_run, &t);
     let subtitle = div()
         .id("briefing-subtitle")
         .test_support()
@@ -463,15 +485,12 @@ pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
     let mut children: Vec<AnyElement> = vec![subtitle.into_any_element()];
     if show_tutorial {
         children.push(onboarding::render(app, cx).into_any_element());
-    } else {
-        let last_run = text::relative_time_ms(m.last_run_at_ms(), Utc::now().timestamp_millis());
-        children.push(stat_strip(articles, last_run, &t).into_any_element());
     }
     if !m.briefing_errors.is_empty() && !m.scanning {
         children.push(errors_banner(&m.briefing_errors, &t).into_any_element());
     }
-    if !m.categories.is_empty() {
-        children.push(chips(&m.categories, articles, &m.active_category, &t).into_any_element());
+    if !m.categories.is_empty() || !articles.is_empty() {
+        children.push(filter_bar(m, &t, cx).into_any_element());
     }
 
     let opts = CardOpts {
@@ -489,9 +508,9 @@ pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
             skeleton_list(&t)
         }
     } else {
-        let filtered: Vec<Article> = articles
-            .iter()
-            .filter(|a| m.active_category == "all" || a.category == m.active_category)
+        let filtered: Vec<Article> = m
+            .briefing_articles(view.kept())
+            .into_iter()
             .cloned()
             .collect();
         if grid {

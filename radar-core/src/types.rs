@@ -234,6 +234,9 @@ pub struct Prefs {
     /// briefing (and never sent to Claude). `0` keeps every article.
     #[serde(default, deserialize_with = "lenient")]
     pub stale_after_days: u32,
+    /// Briefing shows only unread articles. Per device, not synced.
+    #[serde(default, deserialize_with = "lenient")]
+    pub unread_only: bool,
 }
 
 impl Default for Prefs {
@@ -252,6 +255,7 @@ impl Default for Prefs {
             schedule_time: d_time(),
             summary_model: SummaryModel::default(),
             stale_after_days: 0,
+            unread_only: false,
         }
     }
 }

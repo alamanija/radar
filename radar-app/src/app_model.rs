@@ -475,6 +475,26 @@ impl AppModel {
         self.patch_article_state(cx, out);
     }
 
+    /// An article was opened: marks it read (and PATCHes) unless it already
+    /// is. Opening the URL is the caller's job.
+    pub fn mark_opened(&mut self, cx: &mut Context<Self>, id: u64) {
+        let out = self.update_model(cx, |m| m.set_read(id, true));
+        self.note_toggle(&out);
+        self.patch_article_state(cx, out);
+    }
+
+    /// Marks every unread article in the active category read, one PATCH
+    /// per changed article (the server has no bulk endpoint; the queue
+    /// dedups per article and retries past the rate limit).
+    pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        let changed = self.update_model(cx, RadarModel::mark_all_read);
+        for out in changed {
+            let out = Some(out);
+            self.note_toggle(&out);
+            self.patch_article_state(cx, out);
+        }
+    }
+
     fn note_toggle(&mut self, out: &Option<(String, ArticleState)>) {
         if let (Some(ids), Some((id, _))) = (self.toggled_in_pull.as_mut(), out) {
             ids.insert(id.clone());

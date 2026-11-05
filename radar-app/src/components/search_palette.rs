@@ -98,10 +98,17 @@ impl Render for SearchPalette {
         let query = self.state.read(cx).query(cx);
         let (articles, sources) = split(&query, AppModel::global(cx).read(cx));
         *self.shown.borrow_mut() = (articles.clone(), sources.clone());
+        // Live age and the category's current label and color.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let model = &AppModel::global(cx).read(cx).model;
+        let display: Vec<_> = articles
+            .iter()
+            .map(|a| model.for_display(a, now_ms))
+            .collect();
 
         let article_group = CommandGroup::new()
             .label("ARTICLES")
-            .items(articles.iter().map(|a| {
+            .items(display.iter().map(|a| {
                 let dot = t.dot_for(&a.accent);
                 let subtitle = format!("{} · {} · {}", a.source, a.category_label, a.published);
                 result_row(&a.title, subtitle, move |_| match dot {

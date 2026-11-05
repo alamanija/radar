@@ -89,7 +89,7 @@ fn briefing_greeting_falls_back_to_account_email(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn stats_row_values(cx: &mut TestAppContext) {
+fn subtitle_carries_the_counts_and_last_run(cx: &mut TestAppContext) {
     let s = boot(cx);
     three_articles(&s, cx);
     s.edit(cx, |m| {
@@ -100,17 +100,13 @@ fn stats_row_values(cx: &mut TestAppContext) {
             errors: vec![],
         }];
     });
-    assert_eq!(s.label(cx, "stat-fetched").as_deref(), Some("3"));
-    assert_eq!(s.label(cx, "stat-unread").as_deref(), Some("2"));
-    assert_eq!(s.label(cx, "stat-saved").as_deref(), Some("1"));
-    assert_eq!(s.label(cx, "stat-last-run").as_deref(), Some("2h ago"));
-}
-
-#[gpui_kit::test]
-fn stats_last_run_is_never_without_archives(cx: &mut TestAppContext) {
-    let s = boot(cx);
-    three_articles(&s, cx);
-    assert_eq!(s.label(cx, "stat-last-run").as_deref(), Some("never"));
+    assert_eq!(
+        s.label(cx, "briefing-subtitle").as_deref(),
+        Some("Your briefing surfaced 3 articles across 1 source · 2 unread · updated 2h ago.")
+    );
+    // The counts live in the subtitle only.
+    assert!(!s.exists(cx, "stat-fetched"));
+    assert!(!s.exists(cx, "stat-last-run"));
 }
 
 #[gpui_kit::test]
@@ -233,17 +229,12 @@ fn onboarding_shown_when_no_sources_and_hydrated(cx: &mut TestAppContext) {
         s.label(cx, "briefing-subtitle").as_deref(),
         Some("Let's get you set up.")
     );
-    assert!(
-        !s.exists(cx, "stat-fetched"),
-        "no stats strip during the tutorial"
-    );
 
     // A source (or any briefing) ends the first-run state.
     s.edit(cx, |m| {
         m.add_source("A".into(), "tools".into(), Some("https://a.test".into()));
     });
     assert!(!s.exists(cx, "onboarding"));
-    assert!(s.exists(cx, "stat-fetched"));
 }
 
 #[gpui_kit::test]
@@ -349,12 +340,25 @@ fn subtitle_follows_the_briefing_state(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn card_click_toggles_read_without_sync(cx: &mut TestAppContext) {
+fn card_click_opens_and_marks_read(cx: &mut TestAppContext) {
     let s = boot(cx);
     three_articles(&s, cx);
     s.click(cx, "card-1");
+    assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
     assert!(s.read(cx, |m| m.model.articles[0].read));
+    // Opening a read article again leaves it read.
     s.click(cx, "card-1");
+    assert!(s.read(cx, |m| m.model.articles[0].read));
+}
+
+#[gpui_kit::test]
+fn card_read_label_toggles_read(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    three_articles(&s, cx);
+    s.click(cx, "card-1-read");
+    assert!(s.read(cx, |m| m.model.articles[0].read));
+    assert_eq!(cx.opened_url(), None, "the toggle doesn't open the article");
+    s.click(cx, "card-1-read");
     assert!(!s.read(cx, |m| m.model.articles[0].read));
 }
 
@@ -377,11 +381,13 @@ fn card_buttons_do_not_toggle_read(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn card_open_opens_url_without_changing_read_state(cx: &mut TestAppContext) {
+fn card_open_button_opens_marks_read_and_patches(cx: &mut TestAppContext) {
     let server = MockServer::start();
-    let any = server.mock(|when, then| {
-        when.any_request();
-        then.status(200);
+    let patch = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/sync/article-states")
+            .json_body(serde_json::json!({"articleId":"1","read":true,"bookmarked":false}));
+        then.status(200).json_body(serde_json::json!({"ok": true}));
     });
     let s = boot(cx);
     three_articles(&s, cx);
@@ -390,15 +396,16 @@ fn card_open_opens_url_without_changing_read_state(cx: &mut TestAppContext) {
 
     s.click(cx, "card-1-open");
     assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
-    assert!(
-        !s.read(cx, |m| m.model.articles[0].read),
-        "Open must not mark read"
-    );
+    assert!(s.read(cx, |m| m.model.articles[0].read));
+    wait_until(cx, || patch.calls() > 0);
+    assert_eq!(patch.calls(), 1);
+
+    // Opening it again changes nothing, so nothing is sent.
+    s.click(cx, "card-1-open");
     cx.executor().allow_parking();
     std::thread::sleep(Duration::from_millis(200));
     cx.run_until_parked();
-    assert_eq!(any.calls(), 0, "no PATCH for Open");
-    assert!(client.queued().is_empty());
+    assert_eq!(patch.calls(), 1, "no PATCH for an already-read article");
 }
 
 #[gpui_kit::test]
@@ -407,7 +414,11 @@ fn row_actions_work(cx: &mut TestAppContext) {
     three_articles(&s, cx);
     s.edit(cx, |m| m.prefs.view_mode = ViewMode::List);
     s.click(cx, "row-1");
+    assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
     assert!(s.read(cx, |m| m.model.articles[0].read));
+    s.click(cx, "row-1-read");
+    assert!(!s.read(cx, |m| m.model.articles[0].read), "the dot toggles");
+    s.click(cx, "row-1-read");
     s.click(cx, "row-1-bookmark");
     s.read(cx, |m| {
         assert!(m.model.articles[0].bookmarked);
@@ -433,7 +444,7 @@ fn card_toggle_read_calls_model_and_queues_patch_when_signed_in(cx: &mut TestApp
     let client = signed_in_client(&server.base_url());
     s.model.update(cx, |m, _| m.sync = Some(client.clone()));
 
-    s.click(cx, "card-1");
+    s.click(cx, "card-1-read");
     assert!(
         s.read(cx, |m| m.model.articles[0].read),
         "model updates at once"
@@ -465,9 +476,85 @@ fn card_toggle_without_sync_sends_nothing(cx: &mut TestAppContext) {
     let s = boot(cx);
     three_articles(&s, cx);
     assert!(s.read(cx, |m| m.sync.is_none()));
-    s.click(cx, "card-1");
+    s.click(cx, "card-1-read");
+    s.click(cx, "card-2");
     cx.executor().allow_parking();
     std::thread::sleep(Duration::from_millis(200));
     cx.run_until_parked();
     assert_eq!(any.calls(), 0);
+}
+
+#[gpui_kit::test]
+fn unread_only_hides_read_articles_but_keeps_ones_just_opened(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    three_articles(&s, cx);
+    assert_eq!(
+        s.label(cx, "briefing-unread-only").as_deref(),
+        Some("Unread only")
+    );
+    s.click(cx, "briefing-unread-only");
+    assert!(s.read(cx, |m| m.model.prefs.unread_only));
+    assert!(s.exists(cx, "card-1"));
+    assert!(!s.exists(cx, "card-2"), "read: hidden");
+    assert!(s.exists(cx, "card-3"));
+
+    // Opened under the filter: stays put while you're looking.
+    s.click(cx, "card-1");
+    assert!(s.read(cx, |m| m.model.articles[0].read));
+    assert!(s.exists(cx, "card-1"));
+
+    // Changing the category starts over.
+    s.click(cx, "chip-tools");
+    s.click(cx, "chip-all");
+    assert!(!s.exists(cx, "card-1"));
+    assert!(s.exists(cx, "card-3"));
+
+    s.click(cx, "briefing-unread-only");
+    assert!(s.exists(cx, "card-1") && s.exists(cx, "card-2"));
+}
+
+#[gpui_kit::test]
+fn mark_all_read_marks_the_filtered_articles_and_patches_each(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let patch = server.mock(|when, then| {
+        when.method(PATCH).path("/sync/article-states");
+        then.status(200).json_body(serde_json::json!({"ok": true}));
+    });
+    let s = boot(cx);
+    three_articles(&s, cx);
+    let client = signed_in_client(&server.base_url());
+    s.model.update(cx, |m, _| m.sync = Some(client.clone()));
+
+    s.click(cx, "chip-packaging");
+    s.click(cx, "briefing-mark-all-read");
+    s.read(cx, |m| {
+        assert!(m.model.articles[0].read);
+        assert!(!m.model.articles[2].read, "other category untouched");
+    });
+    wait_until(cx, || patch.calls() >= 1);
+
+    s.click(cx, "chip-all");
+    s.edit(cx, |m| m.prefs.unread_only = true);
+    assert!(s.exists(cx, "card-3"));
+    s.click(cx, "briefing-mark-all-read");
+    assert!(s.read(cx, |m| m.model.articles.iter().all(|a| a.read)));
+    assert!(
+        !s.exists(cx, "card-3"),
+        "caught up: the filtered list empties"
+    );
+    wait_until(cx, || patch.calls() >= 2);
+    assert_eq!(patch.calls(), 2, "one PATCH per article that changed");
+}
+
+#[gpui_kit::test]
+fn cards_show_live_time_and_the_current_category_label(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    three_articles(&s, cx);
+    s.edit(cx, |m| {
+        m.articles[0].published = "2h ago".into();
+        m.articles[0].published_at = Some(Utc::now() - Dur::days(3));
+        m.categories[0].label = "Renamed".into();
+    });
+    assert_eq!(s.label(cx, "card-1-time").as_deref(), Some("3d ago"));
+    assert_eq!(s.label(cx, "card-1-category").as_deref(), Some("RENAMED"));
 }

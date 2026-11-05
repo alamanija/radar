@@ -487,6 +487,7 @@ mod tests {
                 schedule_time: "06:45".into(),
                 summary_model: SummaryModel::Sonnet55,
                 stale_after_days: 14,
+                unread_only: true,
             },
             sources: vec![
                 source(1, "packaging", Some(1_767_261_000_000), SourceHealth::Ok),
