@@ -37,7 +37,7 @@
   ],
   "articles": [
     {
-      "id": 1001,
+      "id": 13612357342556406000,
       "title": "A fresh take on oat milk cartons",
       "source": "Dieline",
       "sourceId": 1,
@@ -49,23 +49,23 @@
       "read": false,
       "bookmarked": true,
       "accent": "camel",
-      "url": "https://example.com/oat",
-      "imageUrl": "https://example.com/oat.png"
+      "url": "https://thedieline.com/oat-milk-cartons",
+      "imageUrl": "https://thedieline.com/oat.png"
     },
     {
-      "id": 1002,
-      "title": "Rebrand of a regional bank",
-      "source": "Brand New",
-      "sourceId": 2,
-      "category": "branding",
-      "categoryLabel": "Branding",
-      "summary": "Bold type, quiet colour.",
+      "id": 15651859121617930000,
+      "title": "Inside a carton lab",
+      "source": "Dieline",
+      "sourceId": 1,
+      "category": "packaging",
+      "categoryLabel": "Packaging",
+      "summary": "A visit to a cardboard prototyping studio.",
       "published": "1d ago",
       "publishedAt": null,
       "read": true,
       "bookmarked": false,
-      "accent": "olive",
-      "url": "https://example.com/bank",
+      "accent": "camel",
+      "url": "https://thedieline.com/carton-lab",
       "imageUrl": null
     }
   ],
@@ -75,7 +75,7 @@
       "runAt": "2026-01-01T09:30:00.000Z",
       "articles": [
         {
-          "id": 1001,
+          "id": 13612357342556406000,
           "title": "A fresh take on oat milk cartons",
           "source": "Dieline",
           "sourceId": 1,
@@ -87,7 +87,7 @@
           "read": false,
           "bookmarked": false,
           "accent": "camel",
-          "url": "https://example.com/oat",
+          "url": "https://thedieline.com/oat-milk-cartons",
           "imageUrl": null
         }
       ],
@@ -103,23 +103,35 @@
   "profile": { "name": "Stefan", "role": "Art director", "lens": "I run a small packaging studio." },
   "sync-queue": [
     {
-      "id": "q-1",
+      "id": "6f1c5d2e-1b7a-4a39-9d64-2f0c8e1a7b55",
       "path": "/sync/prefs",
       "method": "PUT",
-      "body": "{\"theme\":\"dark\"}",
-      "headers": { "Content-Type": "application/json" },
-      "groupKey": "PUT /sync/prefs",
+      "body": {
+        "prefs": {
+          "theme": "dark",
+          "viewMode": "list",
+          "runAtLaunch": true,
+          "scheduleEnabled": true,
+          "scheduleTime": "08:15",
+          "density": "compact",
+          "accent": "Olive",
+          "useSerif": false,
+          "showAccent": true
+        }
+      },
+      "headers": { "If-Match": "W/\"2026-01-01T09:00:00.123456Z\"" },
+      "groupKey": "PUT:/sync/prefs",
       "accountId": "user_abc",
       "tries": 0,
       "queuedAt": 1767261000000
     },
     {
-      "id": "q-2",
-      "path": "/sync/article-states/1001",
+      "id": "0b9e4a77-3c2d-4f1e-8a65-9d7c1e2f3a40",
+      "path": "/sync/article-states",
       "method": "PATCH",
-      "body": "{\"bookmarked\":true}",
-      "headers": { "Content-Type": "application/json" },
-      "groupKey": "article:1001",
+      "body": { "articleId": "15651859121617930000", "read": true, "bookmarked": false },
+      "headers": {},
+      "groupKey": "PATCH:/sync/article-states:15651859121617930000",
       "accountId": "user_abc",
       "tries": 2,
       "queuedAt": 1767261005000

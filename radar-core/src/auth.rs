@@ -207,6 +207,8 @@ pub enum AuthError {
     Http(String),
     /// Clerk settings are missing.
     NotConfigured,
+    /// The user abandoned the browser flow (the app's Cancel).
+    Cancelled,
 }
 
 impl std::fmt::Display for AuthError {
@@ -221,6 +223,7 @@ impl std::fmt::Display for AuthError {
             Self::StateMismatch => write!(f, "sign-in callback did not match this attempt"),
             Self::Http(m) => write!(f, "sign-in request failed: {m}"),
             Self::NotConfigured => write!(f, "Clerk sign-in is not configured"),
+            Self::Cancelled => write!(f, "sign-in was cancelled"),
         }
     }
 }

@@ -15,7 +15,7 @@ use httpmock::prelude::*;
 use radar_core::keychain::{KeyStore, CLERK_OAUTH_USER};
 use radar_core::store;
 use radar_core::sync::resource::SyncResource;
-use radar_core::sync::resources::{ArchivesRes, CategoriesRes, PrefsRes};
+use radar_core::sync::resources::{ArchivesRes, CategoriesRes, PrefsRes, SourcesRes};
 use radar_core::types::{Archive, Prefs, SourceHealth, Theme, View};
 use serde_json::json;
 use std::path::PathBuf;
@@ -661,6 +661,298 @@ fn source_stamps_during_pull_survive(cx: &mut TestAppContext) {
             "per-device fields never make sources dirty"
         );
     });
+}
+
+fn sources_row(names: &[&str]) -> serde_json::Value {
+    let sources: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            json!({"id": i + 1, "name": name, "category": "packaging", "feedUrl": null,
+                   "enabled": true, "isDefault": false})
+        })
+        .collect();
+    json!({ "sources": sources })
+}
+
+/// Signs in as `id` and waits for the pulls, then for the debounced save
+/// that writes the store and the last-synced digests.
+fn synced(h: &Host, cx: &mut TestAppContext, server: &MockServer, id: &str) {
+    sign_in_as(&h.model, cx, &server.base_url(), id, "at");
+    wait_until(cx, |cx| h.read(cx, |m| m.resources_pulled));
+    cx.executor().advance_clock(SAVE_DEBOUNCE);
+    settle(cx);
+}
+
+/// What a quit app leaves behind: its data dir and store path.
+type Leftover = (tempfile::TempDir, PathBuf);
+
+/// The process is gone: its runtime work stops and nothing of it runs again.
+fn kill(cx: &mut TestAppContext, h: Host) -> Leftover {
+    h.model.update(cx, |m, _| m.rt_work.abort_all());
+    let Host { _dir, path, model } = h;
+    drop(model);
+    cx.run_until_parked();
+    (_dir, path)
+}
+
+/// Adds a source, then quits while the server never answers the quit push
+/// (GPUI stops waiting after 200 ms), and the process ends.
+fn edit_then_quit_unanswered(cx: &mut TestAppContext, h: Host, server: &MockServer) -> Leftover {
+    let mut silent = server.mock(|when, then| {
+        when.method(PUT).path("/sync/sources");
+        then.status(200)
+            .delay(Duration::from_secs(60))
+            .json_body(json!({}));
+    });
+    h.edit(cx, |r| {
+        r.add_source("Brand New".into(), "packaging".into(), None);
+    });
+    drop(h.model.update(cx, |m, cx| m.flush_now(cx)));
+    wait_until(cx, |_| silent.calls() == 1);
+    let left = kill(cx, h);
+    silent.delete();
+    left
+}
+
+/// The next launch on what the last one left, signed in as `id`.
+fn relaunch(cx: &mut TestAppContext, (dir, path): Leftover, base: &str, id: &str) -> Host {
+    let p = path.clone();
+    let model = cx.update(|cx| AppModel::init(p, None, cx));
+    sign_in_as(&model, cx, base, id, "at");
+    wait_until(cx, |cx| model.read_with(cx, |m, _| m.resources_pulled));
+    Host {
+        _dir: dir,
+        path,
+        model,
+    }
+}
+
+/// I1: an edit that never reached the server (the quit push went
+/// unanswered) survives the next launch. The last-synced digest shows the
+/// local value changed since the last sync, so the first pull pushes it,
+/// with the fresh etag, instead of taking the server's older row.
+#[gpui_kit::test]
+fn unsynced_edit_at_quit_is_pushed_on_relaunch(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty_except(&server, "/sync/sources");
+    server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200)
+            .json_body(stamped(sources_row(&["Dieline"]), "s1"));
+    });
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    let left = edit_then_quit_unanswered(cx, h, &server);
+    let local = SourcesRes::push_body(&store::load(&left.1).sources);
+    assert_eq!(local["sources"].as_array().unwrap().len(), 2);
+
+    let put = server.mock(|when, then| {
+        when.method(PUT)
+            .path("/sync/sources")
+            .header("if-match", "W/\"s1\"")
+            .json_body(local.clone());
+        then.status(200).json_body(stamped(local.clone(), "s2"));
+    });
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    put.assert();
+    h.read(cx, |m| {
+        assert_eq!(m.model.sources.len(), 2, "the edit survived the restart");
+        assert_eq!(m.resources.sources.etag.as_deref(), Some("s2"));
+        assert!(!m.resources.sources.needs_push(&m.model.sources));
+    });
+}
+
+/// The control: nothing changed locally since the last sync, so the
+/// server's newer row (another device) replaces the local copy.
+#[gpui_kit::test]
+fn unchanged_local_takes_the_newer_row_on_relaunch(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty_except(&server, "/sync/sources");
+    let mut old_row = server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200)
+            .json_body(stamped(sources_row(&["Dieline"]), "s1"));
+    });
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    let left = kill(cx, h);
+
+    old_row.delete();
+    server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200)
+            .json_body(stamped(sources_row(&["Dieline", "Other"]), "s2"));
+    });
+    let put = server.mock(|when, then| {
+        when.method(PUT).path("/sync/sources");
+        then.status(200).json_body(json!({}));
+    });
+    let h = relaunch(cx, left, &server.base_url(), "user_1");
+    assert_eq!(put.calls(), 0, "nothing local to push");
+    let names = h.read(cx, |m| {
+        m.model
+            .sources
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(names, ["Dieline", "Other"]);
+}
+
+/// Digests written for account A never seed account B: B's row replaces
+/// the local copy (A's unsynced edit is not pushed to B).
+#[gpui_kit::test]
+fn another_accounts_digests_never_seed(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty_except(&server, "/sync/sources");
+    let mut a_row = server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200)
+            .json_body(stamped(sources_row(&["Dieline"]), "s1"));
+    });
+    let h = host(cx);
+    synced(&h, cx, &server, "user_a");
+    let left = edit_then_quit_unanswered(cx, h, &server);
+    let sidecar =
+        radar_core::sync::last_synced::load(&radar_core::sync::last_synced::path_beside(&left.1));
+    assert_eq!(sidecar.map(|s| s.account_id).as_deref(), Some("user_a"));
+
+    a_row.delete();
+    server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200)
+            .json_body(stamped(sources_row(&["B's feed"]), "b1"));
+    });
+    let put = server.mock(|when, then| {
+        when.method(PUT).path("/sync/sources");
+        then.status(200).json_body(json!({}));
+    });
+    let h = relaunch(cx, left, &server.base_url(), "user_b");
+    assert_eq!(put.calls(), 0, "A's edit went to B");
+    assert_eq!(h.read(cx, |m| m.model.sources.len()), 1);
+}
+
+/// Signing out forgets the digests with the session: the next sign-in's
+/// pull takes the server's copy (the sign-out policy).
+#[gpui_kit::test]
+fn sign_out_removes_the_last_synced_file(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty(&server);
+    let h = host(cx);
+    synced(&h, cx, &server, "user_1");
+    let sidecar = radar_core::sync::last_synced::path_beside(&h.path);
+    let state = radar_core::sync::last_synced::load(&sidecar).expect("written with the store");
+    assert_eq!(state.account_id, "user_1");
+    assert!(state.digests.prefs.is_some());
+
+    h.model.update(cx, |m, cx| m.sign_out(cx));
+    cx.executor().advance_clock(SAVE_DEBOUNCE);
+    settle(cx);
+    assert!(!sidecar.exists());
+}
+
+/// M2: a toggle made while the article-states pull is in flight is newer
+/// than the server's copy and survives the pull; the server's rows still
+/// land for the articles nobody touched.
+#[gpui_kit::test]
+fn toggle_during_states_pull_survives(cx: &mut TestAppContext) {
+    use crate::workspace::shell_tests::article;
+    let server = MockServer::start();
+    not_found(
+        &server,
+        &[
+            "/sync/profile",
+            "/sync/categories",
+            "/sync/sources",
+            "/sync/prefs",
+            "/sync/archives",
+        ],
+    );
+    echo_prefs(&server);
+    let get = server.mock(|when, then| {
+        when.method(GET).path("/sync/article-states");
+        then.status(200)
+            .delay(Duration::from_millis(600))
+            .json_body(json!({"states": [
+                {"articleId": "1", "read": false, "bookmarked": true},
+                {"articleId": "2", "read": true, "bookmarked": false},
+            ]}));
+    });
+    let patch = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/sync/article-states")
+            .json_body(json!({"articleId": "1", "read": true, "bookmarked": false}));
+        then.status(200).json_body(json!({}));
+    });
+
+    let h = host(cx);
+    h.edit(cx, |r| {
+        r.articles = vec![article(1, "tools", false), article(2, "tools", false)]
+    });
+    sign_in_as(&h.model, cx, &server.base_url(), "user_1", "at");
+    wait_until(cx, |_| get.calls() == 1);
+    assert!(h.read(cx, |m| m.resources_out), "the pull is still running");
+    h.model.update(cx, |m, cx| m.toggle_read(cx, 1));
+    wait_until(cx, |cx| h.read(cx, |m| m.article_states_pulled));
+
+    wait_until(cx, |_| patch.calls() == 1);
+    h.read(cx, |m| {
+        let a1 = &m.model.articles[0];
+        assert!(a1.read && !a1.bookmarked, "the toggle beats the older row");
+        assert_eq!(
+            m.model.article_states.get("1").copied(),
+            Some(ArticleState {
+                read: true,
+                bookmarked: false
+            })
+        );
+        assert!(
+            m.model.articles[1].read,
+            "the untouched article takes the row"
+        );
+    });
+}
+
+/// M3: the flush's queue rewrite writes the flush-time snapshot, so once a
+/// newer save has landed (a briefing during the updater's await) it must
+/// leave the file alone; while nothing newer landed it still writes.
+#[test]
+fn queue_rewrite_never_lands_over_a_newer_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("radar.json");
+    let newer = radar_core::store::Snapshot {
+        profile: radar_core::types::Profile {
+            name: "Newer".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    store::save(&path, &newer).unwrap();
+    let queued = json!({"id": "q", "path": "/sync/profile", "method": "PUT"});
+    let rewrite = |generation: u64, written: u64| QueueRewrite {
+        path: path.clone(),
+        snap: radar_core::store::Snapshot::default(),
+        mirror: Arc::new(std::sync::Mutex::new(PersistedQueue {
+            items: vec![queued.clone()],
+            rev: 1,
+            epoch: 0,
+        })),
+        rev: 0,
+        generation,
+        written_gen: Arc::new(std::sync::Mutex::new(written)),
+    };
+
+    rewrite(3, 4).run();
+    assert_eq!(
+        store::load(&path).profile.name,
+        "Newer",
+        "a newer save landed"
+    );
+    assert!(store::load(&path).sync_queue.is_empty());
+
+    rewrite(4, 4).run();
+    assert_eq!(store::load(&path).sync_queue, vec![queued.clone()]);
 }
 
 /// Account A's drain is asleep in its retry backoff when A signs out and B

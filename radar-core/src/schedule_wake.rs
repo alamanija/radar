@@ -8,14 +8,14 @@
 //!     `~/Library/LaunchAgents/com.radar.scheduler.plist` with a
 //!     `StartCalendarInterval` and `ProgramArguments` of
 //!     `[<current_exe>, "--autostart"]`. `launchctl load/unload -w`.
-//!   - Windows: a Task Scheduler entry named "Radar Scheduler" created via
-//!     `schtasks.exe /Create /SC DAILY`, deleted via `/Delete /F`.
-//!   - Linux: a pair of `~/.config/systemd/user/radar-scheduler.{service,timer}`
+//!   - Windows: a Task Scheduler entry named `com.radar.scheduler` created
+//!     via `schtasks.exe /Create /SC DAILY`, deleted via `/Delete /F`.
+//!   - Linux: a pair of `~/.config/systemd/user/com.radar.scheduler.{service,timer}`
 //!     units with an `OnCalendar` expression matching the slot, registered
 //!     via `systemctl --user enable --now`.
 //!
-//! In every case the launched binary gets `--autostart`, which the main
-//! setup path keys on to start with the window hidden (see `lib.rs`). Once
+//! In every case the launched binary gets `--autostart`, which the app
+//! keys on to start without opening its window (`radar-app/src/main.rs`). Once
 //! Radar is up, the in-process `scheduler` ticks, sees the slot is past,
 //! and fires the briefing. If Radar is already running when the wake
 //! fires, the OS scheduler skips the invocation (or spawns a second

@@ -31,6 +31,7 @@ use radar_core::ingest::{self, CategoryInput, SourceInput};
 use radar_core::keychain::KeyStore;
 use radar_core::model::{ArticleState, BriefingOutcome, RadarModel};
 use radar_core::store;
+use radar_core::sync::last_synced::{self, LastSynced};
 use radar_core::sync::queue::SleepFn;
 use radar_core::sync::{article_states, SyncClient, SyncStatus};
 use radar_core::types::{Account, BriefingResponse};
@@ -144,12 +145,26 @@ pub struct AppModel {
     /// sign-out and account switch.
     pub resources_pulled: bool,
     pub store_path: PathBuf,
+    /// `sync-state.json` beside the store ([`last_synced`]).
+    last_synced_path: PathBuf,
+    /// What the signed-in account last synced, written with every store
+    /// save (`None`: nothing to keep, the file is removed). The next session
+    /// of the same account seeds its divergence baselines from it.
+    last_synced: Option<LastSynced>,
     /// Sync bookkeeping (pulled / server key / etag) of the five resources.
     pub resources: SyncResources,
     /// Article states pulled (and overlaid) for the signed-in account.
     pub article_states_pulled: bool,
+    /// Articles toggled while an article-states pull runs (`Some` only
+    /// then): their live state is newer than the pulled copy.
+    toggled_in_pull: Option<std::collections::HashSet<String>>,
     /// A browser sign-in is running.
     pub signing_in: bool,
+    /// Bumped by every sign-in start and cancel: a result for an older
+    /// attempt was cancelled.
+    sign_in_attempt: u64,
+    /// Stops the running browser sign-in.
+    sign_in_cancel: Option<futures::channel::oneshot::Sender<()>>,
     /// Where the Anthropic API key lives: the OS keychain (an in-memory
     /// store under `cfg(test)`).
     pub key_store: Arc<dyn KeyStore>,
@@ -213,6 +228,9 @@ impl AppModel {
         // Startup only: nothing else uses the session yet, so this can't
         // wait on a keychain write.
         let account = session.as_ref().and_then(Session::account);
+        let last_synced_path = last_synced::path_beside(&store_path);
+        // Whose they are is checked when sync starts (`start_sync`).
+        let last_synced = last_synced::load(&last_synced_path);
         Self {
             model,
             session,
@@ -222,9 +240,14 @@ impl AppModel {
             ready: true,
             resources_pulled: false,
             store_path,
+            last_synced_path,
+            last_synced,
             resources: SyncResources::default(),
             article_states_pulled: false,
+            toggled_in_pull: None,
             signing_in: false,
+            sign_in_attempt: 0,
+            sign_in_cancel: None,
             key_store: sync_lifecycle::default_key_store(),
             server_base: radar_core::sync::server_url(),
             sign_in_impl: sync_lifecycle::browser_sign_in(),
@@ -373,6 +396,8 @@ impl AppModel {
         Some(SaveJob {
             path: self.store_path.clone(),
             snap: self.model.to_snapshot(queue),
+            last_synced_path: self.last_synced_path.clone(),
+            last_synced: self.last_synced.clone(),
             generation: self.save_gen,
             written_gen: self.written_gen.clone(),
         })
@@ -435,13 +460,21 @@ impl AppModel {
     /// Flips the read flag of an article and PATCHes it when signed in.
     pub fn toggle_read(&mut self, cx: &mut Context<Self>, id: u64) {
         let out = self.update_model(cx, |m| m.toggle_read(id));
+        self.note_toggle(&out);
         self.patch_article_state(cx, out);
     }
 
     /// Flips the bookmark flag of an article and PATCHes it when signed in.
     pub fn toggle_bookmark(&mut self, cx: &mut Context<Self>, id: u64) {
         let out = self.update_model(cx, |m| m.toggle_bookmark(id));
+        self.note_toggle(&out);
         self.patch_article_state(cx, out);
+    }
+
+    fn note_toggle(&mut self, out: &Option<(String, ArticleState)>) {
+        if let (Some(ids), Some((id, _))) = (self.toggled_in_pull.as_mut(), out) {
+            ids.insert(id.clone());
+        }
     }
 
     /// One toggle, one PATCH. The request runs on the tokio runtime (never
@@ -505,6 +538,8 @@ fn next_retry(prev: Duration) -> Duration {
 struct SaveJob {
     path: PathBuf,
     snap: store::Snapshot,
+    last_synced_path: PathBuf,
+    last_synced: Option<LastSynced>,
     generation: u64,
     written_gen: Arc<Mutex<u64>>,
 }
@@ -517,12 +552,22 @@ impl SaveJob {
         self.run_locked(&mut written)
     }
 
+    /// The store, then the last-synced digests taken with it. Never the
+    /// other way round: digests newer than the stored values would make a
+    /// stale local copy look like an edit to push. A failed digest write
+    /// only leaves older digests, which at worst re-push a synced value.
     fn run_locked(&self, written: &mut u64) -> std::io::Result<()> {
         if self.generation <= *written {
             return Ok(());
         }
         store::save(&self.path, &self.snap)?;
         *written = self.generation;
+        if let Err(e) = last_synced::save(&self.last_synced_path, self.last_synced.as_ref()) {
+            log::warn!(
+                "[store] writing {} failed: {e}",
+                self.last_synced_path.display()
+            );
+        }
         Ok(())
     }
 }

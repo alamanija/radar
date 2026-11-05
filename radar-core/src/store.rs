@@ -192,14 +192,26 @@ pub fn save(path: &Path, snap: &Snapshot) -> io::Result<()> {
     map.insert("profile".into(), val(&snap.profile)?);
     map.insert("sync-queue".into(), Value::Array(snap.sync_queue.clone()));
 
+    let body = serde_json::to_vec_pretty(&Value::Object(map)).map_err(io::Error::other)?;
+    write_atomic(path, &body)
+}
+
+/// Writes `body` to `<path>.tmp`, flushes it to the disk, then renames it
+/// over `path`, so `path` holds either the old or the new contents in full.
+/// Without the flush, a power loss could leave a zero-length file at `path`
+/// that the next load would move aside as corrupt.
+pub(crate) fn write_atomic(path: &Path, body: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = PathBuf::from(tmp_name);
-    let body = serde_json::to_vec_pretty(&Value::Object(map)).map_err(io::Error::other)?;
-    std::fs::write(&tmp, body)?;
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(body)?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, path)
 }
 
@@ -225,7 +237,15 @@ mod tests {
         assert_eq!(s.prefs.schedule_time, "08:15");
         assert!(s.prefs.schedule_enabled);
         assert_eq!(s.archives[0].run_at, "2026-01-01T09:30:00.000Z");
-        assert_eq!(s.sync_queue[0]["groupKey"], "PUT /sync/prefs");
+        // 19-digit ids as the webview rounded and wrote them.
+        assert_eq!(s.articles[0].id, 13_612_357_342_556_406_000);
+        assert!(s.articles[0].bookmarked);
+        assert_eq!(s.archives[0].articles[0].id, s.articles[0].id);
+        assert_eq!(s.sync_queue[0]["groupKey"], "PUT:/sync/prefs");
+        assert_eq!(
+            s.sync_queue[1]["groupKey"],
+            "PATCH:/sync/article-states:15651859121617930000"
+        );
     }
 
     #[test]

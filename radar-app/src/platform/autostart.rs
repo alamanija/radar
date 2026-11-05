@@ -12,6 +12,8 @@
 //! must run off the UI thread. Settings reaches them through the model's
 //! [`Backend`] on the blocking pool.
 
+use crate::app_model::AppModel;
+use crate::bridge;
 use anyhow::Context as _;
 use auto_launch::{AutoLaunch, AutoLaunchBuilder, MacOSLaunchMode, WindowsEnableMode};
 use std::sync::Arc;
@@ -56,6 +58,34 @@ pub fn set(enabled: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Points an enabled login item at this executable: the entry an older
+/// build registered (the Tauri app, or an install somewhere else) may start
+/// a path that is gone or holds the old app. Enabling rewrites the entry in
+/// place, so running this on every launch changes nothing once it matches.
+/// A disabled item stays off. Blocks; returns whether it rewrote the entry.
+pub fn repoint(backend: &Backend) -> bool {
+    if !(backend.is_enabled)() {
+        return false;
+    }
+    match (backend.set)(true) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("[autostart] re-registering the login item failed: {e:#}");
+            false
+        }
+    }
+}
+
+impl AppModel {
+    /// [`repoint`] through the model's backend, on the blocking pool.
+    /// `main.rs` calls it once at startup, after installing the real hooks.
+    pub fn repoint_login_item(&self) {
+        let backend = self.hooks.autostart.clone();
+        // Runs to completion on its own; nothing waits for it.
+        drop(bridge::on_blocking(move || repoint(&backend)));
+    }
+}
+
 /// The login item as the model holds it: [`Backend::os`] in the app,
 /// fakes in tests. Both functions block.
 #[derive(Clone)]
@@ -85,6 +115,64 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::Mutex;
+
+    /// A fake login item that is `enabled`, recording each `set`.
+    fn fake(enabled: bool) -> (Backend, Arc<Mutex<Vec<bool>>>) {
+        let sets = Arc::new(Mutex::new(Vec::new()));
+        let recorded = sets.clone();
+        let backend = Backend {
+            is_enabled: Arc::new(move || enabled),
+            set: Arc::new(move |on| {
+                recorded.lock().unwrap().push(on);
+                Ok(())
+            }),
+        };
+        (backend, sets)
+    }
+
+    #[test]
+    fn repoint_rewrites_only_an_enabled_item() {
+        let (off, sets) = fake(false);
+        assert!(!repoint(&off));
+        assert!(sets.lock().unwrap().is_empty(), "never creates one");
+
+        let (on, sets) = fake(true);
+        assert!(repoint(&on));
+        assert!(repoint(&on));
+        assert_eq!(*sets.lock().unwrap(), [true, true], "only ever enables");
+
+        let failing = Backend {
+            is_enabled: Arc::new(|| true),
+            set: Arc::new(|_| Err(anyhow::anyhow!("denied"))),
+        };
+        assert!(!repoint(&failing));
+    }
+
+    #[gpui_kit::test]
+    fn startup_repoint_runs_off_the_ui_thread(cx: &mut gpui_kit::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let model = cx.update(|cx| AppModel::init(dir.path().join("radar.json"), None, cx));
+        let (backend, sets) = fake(true);
+        let on_ui = Arc::new(AtomicBool::new(false));
+        let ui_thread = std::thread::current().id();
+        let seen = on_ui.clone();
+        let set = backend.set.clone();
+        model.update(cx, |m, _| {
+            m.hooks.autostart = Backend {
+                is_enabled: Arc::new(move || {
+                    seen.store(std::thread::current().id() == ui_thread, SeqCst);
+                    true
+                }),
+                set,
+            };
+            m.repoint_login_item();
+        });
+        crate::test_support::wait_until(cx, |_| sets.lock().unwrap().len() == 1);
+        assert!(!on_ui.load(SeqCst), "the OS call ran on the UI thread");
+    }
 
     /// Building the launcher only describes the login item; nothing is
     /// registered (`enable` is never called here).

@@ -34,6 +34,7 @@ use radar_core::auth::{AuthError, Session};
 use radar_core::keychain::KeyStore;
 use radar_core::model::ArticleState;
 use radar_core::sync::article_states;
+use radar_core::sync::last_synced::{Digests, LastSynced};
 use radar_core::sync::queue::{DrainReport, QueuedReq};
 use radar_core::sync::resource::SyncedResource;
 use radar_core::sync::resources::{
@@ -57,10 +58,19 @@ pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Opens the authorize URL in the browser.
 pub type OpenUrl = Box<dyn FnOnce(&str) + Send>;
+/// Resolves when the user cancels the sign-in (or its sender is dropped).
+pub type SignInCancel = oneshot::Receiver<()>;
 /// The browser sign-in: `Session::sign_in` in the app, injectable in tests.
-/// The returned future runs on the tokio runtime.
+/// The returned future runs on the tokio runtime. On the cancel signal it
+/// should stop the flow (freeing the loopback port) with
+/// `AuthError::Cancelled`; the app doesn't wait for it either way.
 pub type SignInFn = Arc<
-    dyn Fn(Session, OpenUrl, Duration) -> BoxFuture<'static, Result<Account, AuthError>>
+    dyn Fn(
+            Session,
+            OpenUrl,
+            Duration,
+            SignInCancel,
+        ) -> BoxFuture<'static, Result<Account, AuthError>>
         + Send
         + Sync,
 >;
@@ -73,6 +83,9 @@ pub struct SyncResources {
     pub sources: SyncedResource<SourcesRes>,
     pub prefs: SyncedResource<PrefsRes>,
     pub archives: SyncedResource<ArchivesRes>,
+    /// Last-synced digests from an earlier run of this account, applied by
+    /// the session's first pull ([`seed`](Self::seed)).
+    seed: Digests,
 }
 
 impl SyncResources {
@@ -83,6 +96,45 @@ impl SyncResources {
         self.sources.reset();
         self.prefs.reset();
         self.archives.reset();
+        self.seed = Digests::default();
+    }
+
+    /// Hands the first pull the digests an earlier run persisted for this
+    /// account (call after `reset`).
+    fn seed(&mut self, digests: Digests) {
+        self.seed = digests;
+    }
+
+    /// Seeds each resource's divergence baseline before its first pull
+    /// (on tokio: it serializes the local values).
+    fn apply_seed(&mut self, l: &Locals) {
+        let seed = std::mem::take(&mut self.seed);
+        if let Some(d) = &seed.profile {
+            self.profile.seed_last_synced(d, &l.profile);
+        }
+        if let Some(d) = &seed.categories {
+            self.categories.seed_last_synced(d, &l.categories);
+        }
+        if let Some(d) = &seed.sources {
+            self.sources.seed_last_synced(d, &l.sources);
+        }
+        if let Some(d) = &seed.prefs {
+            self.prefs.seed_last_synced(d, &l.prefs);
+        }
+        if let Some(d) = &seed.archives {
+            self.archives.seed_last_synced(d, &l.archives);
+        }
+    }
+
+    /// What to persist so the next run can seed (hashes the server keys).
+    fn digests(&self) -> Digests {
+        Digests {
+            profile: self.profile.last_synced_digest(),
+            categories: self.categories.last_synced_digest(),
+            sources: self.sources.last_synced_digest(),
+            prefs: self.prefs.last_synced_digest(),
+            archives: self.archives.last_synced_digest(),
+        }
     }
 
     pub fn all_pulled(&self) -> bool {
@@ -95,18 +147,26 @@ impl SyncResources {
 
     /// A queued PUT landed: its server body updates that resource's etag and
     /// server key, so the next If-Match isn't stale (JS `onDrainSuccess`).
-    fn on_drained(&mut self, key: &str, body: &Value, local: &LocalRefs) {
+    /// Returns that resource's new last-synced digest.
+    fn on_drained(&mut self, key: &str, body: &Value, local: &LocalRefs) -> Digests {
+        let mut d = Digests::default();
         if key == SyncedResource::<ProfileRes>::group_key() {
             self.profile.on_drained(body, local.profile);
+            d.profile = self.profile.last_synced_digest();
         } else if key == SyncedResource::<CategoriesRes>::group_key() {
             self.categories.on_drained(body, local.categories);
+            d.categories = self.categories.last_synced_digest();
         } else if key == SyncedResource::<SourcesRes>::group_key() {
             self.sources.on_drained(body, local.sources);
+            d.sources = self.sources.last_synced_digest();
         } else if key == SyncedResource::<PrefsRes>::group_key() {
             self.prefs.on_drained(body, local.prefs);
+            d.prefs = self.prefs.last_synced_digest();
         } else if key == SyncedResource::<ArchivesRes>::group_key() {
             self.archives.on_drained(body, local.archives);
+            d.archives = self.archives.last_synced_digest();
         }
+        d
     }
 }
 
@@ -238,13 +298,38 @@ pub(super) fn default_key_store() -> Arc<dyn KeyStore> {
 
 /// `Session::sign_in` on the runtime's blocking pool: it writes the tokens
 /// to the keychain (a blocking call) while holding the session's mutex.
+///
+/// A cancel drops the flow inside `block_on`, which closes its loopback
+/// listener (port 17823). `Session::sign_in` stores the tokens only once the
+/// code exchange is done, with no await in between, so a cancel never
+/// leaves half a session behind. One flow runs at a time: a new one waits
+/// until a cancelled one has let go of the port.
 pub(super) fn browser_sign_in() -> SignInFn {
-    Arc::new(|session: Session, open: OpenUrl, timeout: Duration| {
-        Box::pin(async move {
-            let rt = radar_core::runtime().handle().clone();
-            bridge::on_blocking(move || rt.block_on(session.sign_in(open, timeout))).await
-        })
-    })
+    let one_at_a_time = Arc::new(tokio::sync::Mutex::new(()));
+    Arc::new(
+        move |session: Session, open: OpenUrl, timeout: Duration, cancel: SignInCancel| {
+            let gate = one_at_a_time.clone();
+            Box::pin(async move {
+                let rt = radar_core::runtime().handle().clone();
+                bridge::on_blocking(move || {
+                    rt.block_on(async move {
+                        let flow = async {
+                            let _turn = gate.lock().await;
+                            session.sign_in(open, timeout).await
+                        };
+                        // Cancel first: one sent before the flow starts
+                        // must not open the browser.
+                        tokio::select! {
+                            biased;
+                            _ = cancel => Err(AuthError::Cancelled),
+                            result = flow => result,
+                        }
+                    })
+                })
+                .await
+            })
+        },
+    )
 }
 
 /// Items of the persisted queue that parse; each bad one is skipped and
@@ -348,6 +433,8 @@ struct Outcome {
     archives: Step<Vec<Archive>>,
     /// Server states and the local-only states seeded to the server.
     states: Option<Result<States, SyncError>>,
+    /// The resources' last-synced digests once the op is done.
+    digests: Digests,
 }
 
 /// A pull or push with the resources it borrowed; runs on tokio.
@@ -375,6 +462,9 @@ impl Job {
             // sources, article states, prefs, archives. Only what hasn't
             // pulled yet (a retry skips what already succeeded).
             Op::Pull => {
+                // The first pull of a session: edits made since the last
+                // sync of an earlier run count as offline edits.
+                res.apply_seed(&l);
                 if !res.profile.pulled {
                     out.profile = Some(res.profile.pull(c, &l.profile).await);
                 }
@@ -412,6 +502,7 @@ impl Job {
                 }
             }
         }
+        out.digests = res.digests();
         (res, out)
     }
 }
@@ -448,7 +539,8 @@ impl AppModel {
     /// Browser sign-in through Clerk (OAuth + PKCE). Runs `sign_in_impl` on
     /// the runtime with [`SIGN_IN_TIMEOUT`]; the browser is opened from the
     /// UI thread. Success starts sync; an error is shown as a notification
-    /// and the app stays signed out.
+    /// and the app stays signed out. [`cancel_sign_in`](Self::cancel_sign_in)
+    /// abandons it.
     pub fn sign_in(&mut self, cx: &mut Context<Self>) {
         if self.signing_in || self.account.is_some() {
             return;
@@ -458,6 +550,10 @@ impl AppModel {
             return;
         };
         self.signing_in = true;
+        self.sign_in_attempt += 1;
+        let attempt = self.sign_in_attempt;
+        let (cancel_tx, cancel) = oneshot::channel();
+        self.sign_in_cancel = Some(cancel_tx);
         cx.notify();
         let (url_tx, mut url_rx) = mpsc::unbounded::<String>();
         cx.spawn(async move |_, cx| {
@@ -476,25 +572,62 @@ impl AppModel {
             if let Some(task) = pending_sign_out {
                 task.await;
             }
-            let result = bridge::on_rt(sign_in(session, open, SIGN_IN_TIMEOUT)).await;
-            let _ = this.update(cx, |m, cx| m.finish_sign_in(result, cx));
+            let result = bridge::on_rt(sign_in(session, open, SIGN_IN_TIMEOUT, cancel)).await;
+            let _ = this.update(cx, |m, cx| m.finish_sign_in(attempt, result, cx));
         })
         .detach();
     }
 
-    fn finish_sign_in(&mut self, result: Result<Account, AuthError>, cx: &mut Context<Self>) {
+    /// Abandons the running browser sign-in ("Cancel" beside "Loading
+    /// auth…"): the flow is told to stop, which frees the loopback port, and
+    /// the app is signed out again with no error shown. A new sign-in can
+    /// start right away; the abandoned flow's result is ignored when it
+    /// arrives (see [`finish_sign_in`](Self::finish_sign_in)).
+    pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
+        if !self.signing_in {
+            return;
+        }
         self.signing_in = false;
+        self.sign_in_attempt += 1;
+        if let Some(cancel) = self.sign_in_cancel.take() {
+            let _ = cancel.send(());
+        }
+        log::info!("[auth] sign-in cancelled");
+        cx.notify();
+    }
+
+    fn finish_sign_in(
+        &mut self,
+        attempt: u64,
+        result: Result<Account, AuthError>,
+        cx: &mut Context<Self>,
+    ) {
+        let current = attempt == self.sign_in_attempt;
+        if current {
+            self.signing_in = false;
+            self.sign_in_cancel = None;
+        }
         match result {
-            Ok(account) => {
+            Ok(account) if self.account.is_none() => {
+                if !current {
+                    // The code exchange had already stored the tokens when
+                    // Cancel was pressed. Show the session the keychain now
+                    // holds (and stop a newer attempt) rather than hide it.
+                    log::info!("[auth] sign-in completed as it was cancelled; keeping it");
+                    self.cancel_sign_in(cx);
+                }
                 log::info!("[auth] signed in");
                 self.account = Some(account);
                 self.start_sync(cx);
             }
-            Err(e) => {
+            Ok(_) => log::info!("[auth] extra sign-in result ignored; already signed in"),
+            Err(AuthError::Cancelled) => {}
+            Err(e) if current => {
                 log::warn!("[auth] sign-in failed: {e}");
                 self.account = None;
                 show_error(cx, "Sign-in failed", e.to_string());
             }
+            Err(e) => log::info!("[auth] cancelled sign-in ended: {e}"),
         }
         cx.notify();
     }
@@ -507,11 +640,13 @@ impl AppModel {
     /// not pushed (JS parity: the effect cleanup cleared the timer). A
     /// mutation that meets a rejected refresh token (`invalid_grant`) comes
     /// back `NotSignedIn` and is not queued, and `reset()` also clears
-    /// `failed_pull_key`. Such an edit stays local only, and the next
-    /// sign-in's pull replaces it with the server copy.
+    /// `failed_pull_key`. The last-synced digests are dropped too (the next
+    /// save removes `sync-state.json`). Such an edit stays local only, and
+    /// the next sign-in's pull replaces it with the server copy.
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.stop_sync();
         self.account = None;
+        self.forget_last_synced(cx);
         cx.notify();
         let Some(session) = self.session.clone() else {
             return;
@@ -529,15 +664,24 @@ impl AppModel {
     /// pulls in `App.jsx` effect order, and the push/drain loops.
     ///
     /// Every start is an account boundary: whatever was learned from the
-    /// previous account (server keys, etags) is reset first.
+    /// previous account (server keys, etags) is reset first. The first pull
+    /// is then seeded with the digests an earlier run of this same account
+    /// persisted (never another account's), so an edit that never reached
+    /// the server is pushed rather than replaced.
     pub fn start_sync(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        if self.account.is_none() {
+        let Some(account_id) = self.account.as_ref().map(|a| a.id.clone()) else {
             return;
-        }
+        };
         self.stop_sync();
+        let seed = LastSynced::seed_for(self.last_synced.take(), &account_id);
+        self.resources.seed(seed.clone());
+        self.last_synced = Some(LastSynced {
+            account_id,
+            digests: seed,
+        });
         let epoch = self.sync_epoch;
         let (changed_tx, mut changed_rx) = mpsc::unbounded::<()>();
         let client = Arc::new(self.build_client(session, epoch, changed_tx));
@@ -628,6 +772,7 @@ impl AppModel {
         self.drained_backlog.clear();
         self.resources_pulled = false;
         self.article_states_pulled = false;
+        self.toggled_in_pull = None;
         self.sync_status = SyncStatus::default();
     }
 
@@ -676,6 +821,7 @@ impl AppModel {
             snap: self.model.to_snapshot(Vec::new()),
             mirror: self.sync_queue.clone(),
             rev: self.saved_queue_rev,
+            generation: self.save_gen,
             written_gen: self.written_gen.clone(),
         });
         async move {
@@ -729,6 +875,10 @@ impl AppModel {
             return Begin::Wait(rx);
         }
         self.resources_out = true;
+        let pull_states = op == Op::Pull && !self.article_states_pulled;
+        if pull_states {
+            self.toggled_in_pull = Some(Default::default());
+        }
         let m = &self.model;
         Begin::Started(Box::new(Job {
             op,
@@ -742,12 +892,12 @@ impl AppModel {
                 archives: m.archives.clone(),
                 articles: m.articles.clone(),
             },
-            pull_states: op == Op::Pull && !self.article_states_pulled,
+            pull_states,
         }))
     }
 
     /// Takes the resources back from an op and applies what it learned.
-    fn finish(&mut self, epoch: u64, res: SyncResources, out: Outcome, cx: &mut Context<Self>) {
+    fn finish(&mut self, epoch: u64, res: SyncResources, mut out: Outcome, cx: &mut Context<Self>) {
         if epoch != self.sync_epoch {
             return;
         }
@@ -756,8 +906,9 @@ impl AppModel {
         for waiter in self.resource_waiters.drain(..) {
             let _ = waiter.send(());
         }
+        self.note_synced(std::mem::take(&mut out.digests), cx);
         for (key, body) in std::mem::take(&mut self.drained_backlog) {
-            self.route_drained(&key, &body);
+            self.route_drained(&key, &body, cx);
         }
         let auth_lost = self.apply(out, cx);
         let pulled = self.resources.all_pulled();
@@ -788,6 +939,9 @@ impl AppModel {
             }
             None => None,
         };
+        // Only a pull of the states set it; its toggles are newer than the
+        // pulled copy.
+        let toggled = self.toggled_in_pull.take().unwrap_or_default();
         if states.is_some() {
             self.article_states_pulled = true;
         }
@@ -816,10 +970,19 @@ impl AppModel {
                 if let Some(v) = archives {
                     m.archives = merge_archives(v, &m.archives);
                 }
+                // The server's rows and the seeded flags, except for the
+                // articles toggled while the pull ran: their live state is
+                // newer (and its PATCH is on the way).
                 if let Some((server, seeded)) = states {
-                    article_states::overlay(&mut m.articles, &server);
-                    m.article_states = server;
-                    m.article_states.extend(seeded);
+                    let mut next = server;
+                    next.extend(seeded);
+                    for id in &toggled {
+                        if let Some(live) = m.article_states.get(id) {
+                            next.insert(id.clone(), *live);
+                        }
+                    }
+                    article_states::overlay(&mut m.articles, &next);
+                    m.article_states = next;
                 }
             });
         }
@@ -834,7 +997,7 @@ impl AppModel {
             if self.resources_out {
                 self.drained_backlog.push((key, body));
             } else {
-                self.route_drained(&key, &body);
+                self.route_drained(&key, &body, cx);
             }
         }
         if report.remaining > 0 {
@@ -843,7 +1006,7 @@ impl AppModel {
         }
     }
 
-    fn route_drained(&mut self, key: &str, body: &Value) {
+    fn route_drained(&mut self, key: &str, body: &Value, cx: &mut Context<Self>) {
         let m = &self.model;
         let local = LocalRefs {
             profile: &m.profile,
@@ -852,7 +1015,26 @@ impl AppModel {
             prefs: &m.prefs,
             archives: &m.archives,
         };
-        self.resources.on_drained(key, body, &local);
+        let digests = self.resources.on_drained(key, body, &local);
+        self.note_synced(digests, cx);
+    }
+
+    /// Records what the resources last synced; a change is saved with the
+    /// next store write (it must never land ahead of the store).
+    fn note_synced(&mut self, digests: Digests, cx: &mut Context<Self>) {
+        let Some(state) = self.last_synced.as_mut() else {
+            return;
+        };
+        if state.digests.update(digests) {
+            self.schedule_save(cx);
+        }
+    }
+
+    /// Signed out: no digests are kept, and the next save removes the file.
+    fn forget_last_synced(&mut self, cx: &mut Context<Self>) {
+        if self.last_synced.take().is_some() {
+            self.schedule_save(cx);
+        }
     }
 
     fn on_status(&mut self, epoch: u64, status: SyncStatus, cx: &mut Context<Self>) {
@@ -884,6 +1066,7 @@ impl AppModel {
                     log::info!("[auth] session ended; now signed out");
                     m.stop_sync();
                     m.account = None;
+                    m.forget_last_synced(cx);
                     cx.notify();
                 }
             });
@@ -1014,6 +1197,8 @@ struct QueueRewrite {
     snap: radar_core::store::Snapshot,
     mirror: QueueMirror,
     rev: u64,
+    /// The save generation `snap` belongs to (what the flush wrote).
+    generation: u64,
     written_gen: Arc<Mutex<u64>>,
 }
 
@@ -1027,7 +1212,13 @@ impl QueueRewrite {
             q.items.clone()
         };
         self.snap.sync_queue = items;
-        let _written = lock(&self.written_gen);
+        let written = lock(&self.written_gen);
+        // The app kept running during the push (the updater awaits it) and
+        // a newer save landed: `snap` would overwrite it. That save, or the
+        // one the queue change schedules, carries the queue.
+        if *written > self.generation {
+            return;
+        }
         if let Err(e) = radar_core::store::save(&self.path, &self.snap) {
             log::error!(
                 "[store] final queue save to {} failed: {e}",

@@ -7,8 +7,10 @@ license.workspace = true
 publish.workspace = true
 description = "Radar desktop app (GPUI Kit)"
 
+# The Tauri app's binary was `radar` too: login items, the Windows install
+# and the Tauri updater's relaunch all name `.../radar(.exe)`.
 [[bin]]
-name = "radar-app"
+name = "radar"
 path = "src/main.rs"
 
 [dependencies]
@@ -26,7 +28,7 @@ log = "0.4"
 png = "0.18"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "json"] }
 serde_json = "1"
-tokio = { version = "1", features = ["io-util", "time", "rt"] }
+tokio = { version = "1", features = ["io-util", "time", "rt", "sync", "macros"] }
 tray-icon = "0.26"
 url = "2"
 cargo-packager-updater = { version = "0.2.3", default-features = false, features = ["rustls-tls"] }

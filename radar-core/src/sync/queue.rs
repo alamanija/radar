@@ -994,9 +994,9 @@ mod tests {
             "id": "6f1c5d2e-1b7a-4a39-9d64-2f0c8e1a7b55",
             "path": "/sync/article-states",
             "method": "PATCH",
-            "body": {"articleId": "1001", "read": true, "bookmarked": false},
+            "body": {"articleId": "15651859121617930000", "read": true, "bookmarked": false},
             "headers": {"If-Match": "W/\"2026-01-01T00:00:00Z\""},
-            "groupKey": "PATCH:/sync/article-states:1001",
+            "groupKey": "PATCH:/sync/article-states:15651859121617930000",
             "accountId": "user_abc",
             "tries": 2,
             "queuedAt": 1767261005000i64
@@ -1012,7 +1012,7 @@ mod tests {
         );
         assert_eq!(
             r.group_key.as_deref(),
-            Some("PATCH:/sync/article-states:1001")
+            Some("PATCH:/sync/article-states:15651859121617930000")
         );
         assert_eq!(r.account_id.as_deref(), Some("user_abc"));
         assert_eq!(r.tries, 2);

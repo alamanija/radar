@@ -1,9 +1,10 @@
 //! Radar desktop app (GPUI Kit). Boot order: logging → single-instance
 //! check → application (assets, HTTP client, explicit quit mode, Dock
-//! reopen) → kit init → app identity → fonts → global model → tray and
-//! notification clicks → the real OS hooks → app actions/menu → shell key
-//! bindings → scheduler and run-at-launch → main window (skipped with
-//! `--autostart`).
+//! reopen) → kit init → app identity → fonts → global model (and, off the
+//! UI thread, the Tauri-era keychain cleanup) → tray and notification
+//! clicks → the real OS hooks, session sync and the login-item re-point →
+//! app actions/menu → shell key bindings → scheduler and run-at-launch →
+//! main window (skipped with `--autostart`).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app_model;
@@ -96,6 +97,10 @@ fn main() {
             log::info!("[auth] Clerk not configured; running local-only");
         }
         let model = AppModel::init(radar_core::store::default_path(), session, cx);
+        // The Tauri app's `clerk_db_jwt` keychain entry is dead weight now.
+        drop(bridge::on_blocking(|| {
+            radar_core::keychain::delete_legacy_entries(&OsKeyStore)
+        }));
         // Before the hooks, so their first status push lands on an icon.
         tray::init(cx);
         notify::init(cx);
@@ -103,6 +108,9 @@ fn main() {
             m.set_hooks(os_hooks(), cx);
             // A session restored from the keychain syncs right away.
             m.start_sync(cx);
+            // An enabled "Open at login" entry from an older build (the
+            // Tauri app) is pointed at this executable.
+            m.repoint_login_item();
         });
         register_app_actions(cx, |cx| cx.quit());
         workspace::init(cx);

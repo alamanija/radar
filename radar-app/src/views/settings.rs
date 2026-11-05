@@ -581,14 +581,20 @@ fn account_control(app: &AppModel, t: &Tokens) -> AnyElement {
             .into_any_element();
     }
     if app.signing_in {
-        // The browser flow is running (JSX: the "Loading auth…" state).
-        return div()
+        // The browser flow is running (JSX: the "Loading auth…" state). The
+        // JSX's Clerk modal could be dismissed; Cancel is the native way out
+        // of an abandoned browser tab.
+        let cancel = Pill::new("settings-sign-in-cancel", "Cancel")
+            .on_click(|_, _, cx| AppModel::global(cx).update(cx, |m, cx| m.cancel_sign_in(cx)))
+            .render(t, []);
+        return controls(10.)
             .child(
                 labeled("settings-signing-in".into(), "Loading auth…".into())
                     .font_family(theme::FONT_MONO)
                     .text_size(px(11.5))
                     .text_color(t.text_3),
             )
+            .child(cancel)
             .into_any_element();
     }
     let pill = Pill::new("settings-sign-in", "Sign in");

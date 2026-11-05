@@ -369,7 +369,7 @@ fn sign_in_failure_returns_to_signed_out(cx: &mut TestAppContext) {
     let (signed_out, _) = session("http://127.0.0.1:9", None);
     s.model.update(cx, |m, cx| {
         m.session = Some(signed_out);
-        m.sign_in_impl = Arc::new(|_, open, _| {
+        m.sign_in_impl = Arc::new(|_, open, _, _| {
             open("https://clerk.test/oauth/authorize?state=x");
             Box::pin(async { Err(AuthError::Timeout) })
         });
@@ -395,6 +395,84 @@ fn sign_in_failure_returns_to_signed_out(cx: &mut TestAppContext) {
         Some("Sign in")
     );
     assert!(s.exists(cx, "settings-sign-in"));
+}
+
+/// I3: an abandoned browser sign-in (the tab was closed) can be cancelled
+/// from "Loading auth…": back to signed out without an error toast, and a
+/// new sign-in starts right away.
+#[gpui_kit::test]
+fn cancel_abandoned_sign_in(cx: &mut TestAppContext) {
+    let s = settings(cx);
+    let (signed_out, _) = session("http://127.0.0.1:9", None);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    s.model.update(cx, |m, cx| {
+        m.session = Some(signed_out);
+        // Never resolves, cancelled or not.
+        m.sign_in_impl = Arc::new(move |_, _, _, _| {
+            counted.fetch_add(1, SeqCst);
+            Box::pin(futures::future::pending())
+        });
+        cx.notify();
+    });
+    click(&s, cx, "settings-sign-in");
+    wait_until(cx, |_| calls.load(SeqCst) == 1);
+    assert!(s.read(cx, |m| m.signing_in));
+    assert_eq!(
+        s.label(cx, "settings-signing-in").as_deref(),
+        Some("Loading auth…")
+    );
+
+    click(&s, cx, "settings-sign-in-cancel");
+    settle(cx);
+    assert!(s.read(cx, |m| !m.signing_in
+        && m.account.is_none()
+        && m.sync.is_none()));
+    assert_eq!(notifications(&s, cx), 0, "cancelling is not an error");
+    assert!(!s.exists(cx, "settings-signing-in"));
+
+    click(&s, cx, "settings-sign-in");
+    wait_until(cx, |_| calls.load(SeqCst) == 2);
+    assert!(s.read(cx, |m| m.signing_in), "a new sign-in started");
+}
+
+/// I3 with the real browser flow (`browser_sign_in`, a test session): the
+/// cancel drops the loopback listener inside the flow, so the port is free
+/// again and the next sign-in binds it.
+#[gpui_kit::test]
+fn cancel_frees_the_loopback_port(cx: &mut TestAppContext) {
+    let s = settings(cx);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let cfg = radar_core::auth::AuthConfig {
+        frontend_api: "http://127.0.0.1:9".into(),
+        client_id: "test".into(),
+        redirect_port: port,
+    };
+    let session = radar_core::auth::Session::load(cfg, Arc::new(MemKeyStore::new()));
+    s.model.update(cx, |m, cx| {
+        m.session = Some(session);
+        cx.notify();
+    });
+    let free = || std::net::TcpListener::bind(("127.0.0.1", port)).is_ok();
+
+    click(&s, cx, "settings-sign-in");
+    wait_until(cx, |cx| cx.opened_url().is_some());
+    let first = cx.opened_url().unwrap();
+    assert!(!free(), "the browser flow listens on the port");
+    click(&s, cx, "settings-sign-in-cancel");
+    wait_until(cx, |_| free());
+
+    click(&s, cx, "settings-sign-in");
+    wait_until(cx, |cx| cx.opened_url().is_some_and(|u| u != first));
+    assert!(!free(), "the new sign-in bound the port again");
+    assert_eq!(notifications(&s, cx), 0);
+    click(&s, cx, "settings-sign-in-cancel");
+    wait_until(cx, |_| free());
+    assert!(s.read(cx, |m| !m.signing_in && m.account.is_none()));
 }
 
 #[gpui_kit::test]
@@ -440,7 +518,7 @@ fn sign_out_resets_resources_and_hides_account(cx: &mut TestAppContext) {
         m.session = Some(session.clone());
         m.server_base = base;
         m.sync_sleep = Some(crate::test_support::instant_sleep());
-        m.sign_in_impl = Arc::new(|_, _, _| Box::pin(async { Ok(account("user_1")) }));
+        m.sign_in_impl = Arc::new(|_, _, _, _| Box::pin(async { Ok(account("user_1")) }));
         cx.notify();
     });
     click(&s, cx, "settings-sign-in");

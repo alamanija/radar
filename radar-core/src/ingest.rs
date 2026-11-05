@@ -416,11 +416,22 @@ fn attr_value(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Article id: the hash of `(source_id, url)`, in the form the Tauri app
+/// stored it, so ids from existing installs (read/bookmark state, archives,
+/// article-state rows on the server) keep matching.
 fn hash_id(source_id: u32, url: &str) -> u64 {
     let mut h = DefaultHasher::new();
     source_id.hash(&mut h);
     url.hash(&mut h);
-    h.finish()
+    js_number(h.finish())
+}
+
+/// `n` as the Tauri app's webview kept it: the nearest f64, written back in
+/// its shortest decimal form (`JSON.stringify` / `String`), which Rust's f64
+/// `Display` reproduces. Above 2^53 that is a rounded value. One that rounds
+/// up to 2^64 doesn't fit a u64 and is kept as is.
+fn js_number(n: u64) -> u64 {
+    (n as f64).to_string().parse::<u64>().unwrap_or(n)
 }
 
 #[cfg(test)]
@@ -444,6 +455,135 @@ mod tests {
         let html =
             r#"<img src="data:image/gif;base64,AAA"><img alt="x" src='https://e.com/a.png'>"#;
         assert_eq!(first_img_src(html).as_deref(), Some("https://e.com/a.png"));
+    }
+
+    /// The ids the Tauri app stored. Its Rust side sent the full 64-bit hash
+    /// as a JSON number; the webview kept the nearest f64 and wrote that
+    /// back (`JSON.stringify` into `radar.json`, `String(id)` in article-state
+    /// PATCHes). Expected values computed with node 22:
+    /// `String(JSON.parse("13612357342556405454"))`.
+    #[test]
+    fn article_ids_are_the_js_rounded_ids() {
+        assert_eq!(
+            hash_id(1, "https://thedieline.com/oat-milk-cartons"),
+            13_612_357_342_556_406_000
+        );
+        assert_eq!(
+            hash_id(1, "https://thedieline.com/carton-lab"),
+            15_651_859_121_617_930_000
+        );
+        assert_eq!(
+            js_number(7_565_627_446_702_248_511),
+            7_565_627_446_702_249_000
+        );
+        assert_eq!(js_number(9_007_199_254_740_993), 9_007_199_254_740_992);
+        assert_eq!(js_number(42), 42);
+        // Rounds up to 2^64, which JS printed but a u64 can't hold: kept.
+        assert_eq!(js_number(u64::MAX), u64::MAX);
+    }
+
+    const DIELINE_FEED: &str = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel>
+<title>Dieline</title><link>https://thedieline.com</link><description>Packaging</description>
+<item><title>A fresh take on oat milk cartons</title><link>https://thedieline.com/oat-milk-cartons</link><description>A studio rethinks the carton.</description></item>
+<item><title>Inside a carton lab</title><link>https://thedieline.com/carton-lab</link><description>A visit.</description></item>
+</channel></rss>"#;
+
+    /// An install upgraded from the Tauri app (the fixture holds what it
+    /// wrote): the next briefing yields the same `(source_id, url)` articles,
+    /// and both kinds of stored state find them again: the flags in
+    /// `radar.json`, and the article-state row the JS queued (served as the
+    /// server holds it once drained). New writes dedup against the JS ones.
+    #[tokio::test]
+    async fn tauri_era_state_overlays_after_a_briefing() {
+        use crate::model::RadarModel;
+        use crate::sync::article_states;
+        use crate::sync::queue::{Queue, QueuedReq};
+        use crate::sync::resource::SyncedResource;
+        use crate::sync::resources::PrefsRes;
+        use httpmock::prelude::*;
+        use serde_json::{json, Value};
+        use std::collections::HashSet;
+
+        let snap = crate::store::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/tauri_radar.json"),
+        );
+        let queued: Vec<QueuedReq> =
+            serde_json::from_value(Value::Array(snap.sync_queue.clone())).unwrap();
+        let row = queued
+            .iter()
+            .find(|q| q.method == "PATCH")
+            .unwrap()
+            .body
+            .clone();
+
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/feed");
+                then.status(200).body(DIELINE_FEED);
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path(article_states::ENDPOINT);
+                then.status(200).json_body(json!({ "states": [row] }));
+            })
+            .await;
+        let source = SourceInput {
+            id: 1,
+            name: "Dieline".into(),
+            category: "packaging".into(),
+            feed_url: Some(server.url("/feed")),
+        };
+        // No categories: no Claude pass, so the keychain is never read.
+        let resp = run_briefing(vec![source], Vec::new(), None).await.unwrap();
+        assert_eq!(resp.articles.len(), 2);
+        let by_url = |arts: &[Article], tail: &str| {
+            arts.iter()
+                .find(|a| a.url.ends_with(tail))
+                .cloned()
+                .unwrap()
+        };
+
+        // The flags in radar.json.
+        let mut m = RadarModel::from_snapshot(snap);
+        m.begin_briefing();
+        let out = m.finish_briefing(resp.clone(), &HashSet::from([1]), 1_767_300_000_000);
+        assert_eq!(out.new_count, 0, "the stored briefing had these ids");
+        let saved: Vec<&str> = m.saved().iter().map(|a| a.url.as_str()).collect();
+        assert_eq!(saved, ["https://thedieline.com/oat-milk-cartons"]);
+        assert!(by_url(&m.articles, "/carton-lab").read);
+
+        // The article-state row, keyed by the JS `String(id)`.
+        let c = crate::sync::test_support::client(&server.base_url());
+        let states = article_states::pull(&c).await.unwrap();
+        let mut fresh = resp.articles.clone();
+        assert!(!by_url(&fresh, "/carton-lab").read);
+        article_states::overlay(&mut fresh, &states);
+        assert!(
+            by_url(&fresh, "/carton-lab").read,
+            "the row finds the new id"
+        );
+
+        // A new write for the same article or resource replaces the JS one.
+        let lab = by_url(&m.articles, "/carton-lab");
+        let mut q = Queue::new(queued);
+        q.enqueue(QueuedReq::new(
+            "PATCH",
+            article_states::ENDPOINT,
+            json!({}),
+            Some(article_states::group_key(&lab.id.to_string())),
+        ));
+        q.enqueue(QueuedReq::new(
+            "PUT",
+            "/sync/prefs",
+            json!({}),
+            Some(SyncedResource::<PrefsRes>::group_key()),
+        ));
+        assert_eq!(q.items.len(), 2, "both JS items were superseded");
+        assert!(q.items.iter().all(|i| i.account_id.is_none()));
     }
 
     #[test]

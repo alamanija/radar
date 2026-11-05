@@ -6,6 +6,7 @@
 //! explicit [`SyncClient::drain`] call the app schedules.
 
 pub mod article_states;
+pub mod last_synced;
 pub mod queue;
 pub mod resource;
 pub mod resources;
