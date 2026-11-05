@@ -34,6 +34,19 @@ pub struct CategoryPatch {
     pub accent: Option<String>,
 }
 
+/// Most top stories a briefing leads with.
+pub const TOP_STORIES_MAX: usize = 3;
+/// Lowest importance score that qualifies as a top story.
+pub const TOP_STORY_MIN_IMPORTANCE: u8 = 4;
+
+/// A briefing split for display ([`RadarModel::briefing_sections`]).
+#[derive(Debug)]
+pub struct Sections<'a> {
+    pub top: Vec<&'a Article>,
+    pub new: Vec<&'a Article>,
+    pub earlier: Vec<&'a Article>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BriefingOutcome {
     pub new_count: usize,
@@ -293,6 +306,31 @@ impl RadarModel {
                 !self.prefs.unread_only || !a.read || kept.is_some_and(|k| k.contains(&a.id))
             })
             .collect()
+    }
+
+    /// The filtered briefing ([`briefing_articles`](Self::briefing_articles))
+    /// split for display: up to [`TOP_STORIES_MAX`] new articles scored at
+    /// least [`TOP_STORY_MIN_IMPORTANCE`] (highest first, ties in live
+    /// order), the other new articles, and the rest. New and Earlier keep
+    /// the live order.
+    pub fn briefing_sections(&self, kept: Option<&HashSet<u64>>) -> Sections<'_> {
+        let new_ids = self.new_ids();
+        let (fresh, earlier): (Vec<&Article>, Vec<&Article>) = self
+            .briefing_articles(kept)
+            .into_iter()
+            .partition(|a| new_ids.contains(&a.id));
+        let mut top: Vec<&Article> = fresh
+            .iter()
+            .copied()
+            .filter(|a| a.importance.is_some_and(|i| i >= TOP_STORY_MIN_IMPORTANCE))
+            .collect();
+        top.sort_by_key(|a| std::cmp::Reverse(a.importance));
+        top.truncate(TOP_STORIES_MAX);
+        let new = fresh
+            .into_iter()
+            .filter(|a| !top.iter().any(|t| t.id == a.id))
+            .collect();
+        Sections { top, new, earlier }
     }
 
     /// A copy of `a` for display: the age from `publishedAt` at `now_ms`
@@ -996,5 +1034,88 @@ mod tests {
         );
         assert_eq!(out.new_count, 1);
         assert_eq!(m.new_ids(), HashSet::from([2]));
+    }
+
+    fn scored(id: u64, category: &str, importance: Option<u8>) -> Article {
+        Article {
+            category: category.into(),
+            importance,
+            ..art(id, 1)
+        }
+    }
+
+    /// `articles` live, in order; `earlier` ids also in an older run.
+    fn with_history(articles: Vec<Article>, earlier: &[u64]) -> RadarModel {
+        let mut m = model();
+        let live: Vec<u64> = articles.iter().map(|a| a.id).collect();
+        m.articles = articles;
+        m.archives = vec![
+            run(2, "2026-11-05T07:30:00.000Z", &live),
+            run(1, "2026-11-04T07:30:00.000Z", earlier),
+        ];
+        m
+    }
+
+    fn ids(v: &[&Article]) -> Vec<u64> {
+        v.iter().map(|a| a.id).collect()
+    }
+
+    #[test]
+    fn sections_lead_with_up_to_three_important_new_articles() {
+        let m = with_history(
+            vec![
+                scored(1, "c", Some(5)),
+                scored(2, "c", Some(4)),
+                scored(3, "c", Some(4)),
+                scored(4, "c", Some(5)),
+                scored(5, "c", Some(3)),
+                scored(6, "c", Some(5)),
+                scored(7, "c", None),
+            ],
+            &[6, 7],
+        );
+        let s = m.briefing_sections(None);
+        assert_eq!(ids(&s.top), [1, 4, 2], "score first, then live order");
+        assert_eq!(ids(&s.new), [3, 5]);
+        assert_eq!(ids(&s.earlier), [6, 7], "an earlier 5 is never top");
+    }
+
+    #[test]
+    fn unscored_and_low_scored_articles_are_never_top() {
+        let m = with_history(vec![scored(1, "c", None), scored(2, "c", Some(3))], &[]);
+        let s = m.briefing_sections(None);
+        assert!(s.top.is_empty());
+        assert_eq!(ids(&s.new), [1, 2]);
+        assert!(s.earlier.is_empty());
+    }
+
+    #[test]
+    fn sections_respect_category_and_unread_filters() {
+        let mut m = with_history(
+            vec![
+                scored(1, "a", Some(5)),
+                scored(2, "b", Some(5)),
+                Article {
+                    read: true,
+                    ..scored(3, "b", Some(4))
+                },
+                scored(4, "b", None),
+            ],
+            &[4],
+        );
+        m.active_category = "b".into();
+        let s = m.briefing_sections(None);
+        assert_eq!(ids(&s.top), [2, 3]);
+        assert!(s.new.is_empty());
+        assert_eq!(ids(&s.earlier), [4]);
+
+        m.prefs.unread_only = true;
+        assert_eq!(ids(&m.briefing_sections(None).top), [2], "read: dropped");
+        let kept = HashSet::from([3]);
+        assert_eq!(
+            ids(&m.briefing_sections(Some(&kept)).top),
+            [2, 3],
+            "opened under the filter: stays"
+        );
     }
 }
