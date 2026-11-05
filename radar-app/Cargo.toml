@@ -14,15 +14,19 @@ path = "src/main.rs"
 radar-core = { path = "../radar-core" }
 gpui-kit = "0.9.0"
 anyhow = "1"
+async-channel = "2"
+auto-launch = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "5"
 flexi_logger = "0.29"
 futures = "0.3"
 interprocess = { version = "2.4", features = ["tokio"] }
 log = "0.4"
+png = "0.18"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "json"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "time", "rt"] }
+tray-icon = "0.26"
 url = "2"
 
 [dev-dependencies]
@@ -31,6 +35,10 @@ gpui-kit = { version = "0.9.0", features = ["test-support"] }
 httpmock = "0.9.0"
 tempfile = "3"
 tokio = { version = "1", features = ["time"] }
+
+# The AppIndicator tray needs a GTK main loop on its own thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1"

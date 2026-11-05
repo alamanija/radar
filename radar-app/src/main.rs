@@ -1,13 +1,16 @@
 //! Radar desktop app (GPUI Kit). Boot order: logging → single-instance
-//! check → application (assets, HTTP client, explicit quit mode) → kit init
-//! → fonts → global model → app actions/menu → shell key bindings → main
-//! window (skipped with `--autostart`).
+//! check → application (assets, HTTP client, explicit quit mode, Dock
+//! reopen) → kit init → app identity → fonts → global model → tray and
+//! notification clicks → the real OS hooks → app actions/menu → shell key
+//! bindings → scheduler and run-at-launch → main window (skipped with
+//! `--autostart`).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app_model;
 mod bridge;
 mod components;
 mod platform;
+mod scheduler;
 mod single_instance;
 #[cfg(test)]
 mod test_support;
@@ -15,17 +18,19 @@ mod theme;
 mod views;
 mod workspace;
 
-use app_model::AppModel;
+use app_model::{AppModel, Hooks};
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::StreamExt as _;
 use gpui_kit::{
     px, size, AnyWindowHandle, App, AppContext as _, Bounds, Global, KeyBinding, Menu, MenuItem,
     QuitMode, TitlebarOptions, WindowBounds, WindowOptions,
 };
+use platform::{autostart, notify, tray};
 use radar_core::auth::{AuthConfig, Session};
 use radar_core::keychain::OsKeyStore;
 use single_instance::{InstanceName, Message, Role};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use workspace::Workspace;
 
@@ -71,31 +76,55 @@ fn main() {
         Err(e) => log::warn!("[instance] single-instance check failed: {e}; continuing"),
     }
 
-    gpui_kit::application()
+    let app = gpui_kit::application()
         .with_assets(components::icon::AppAssets)
         .with_http_client(Arc::new(bridge::ReqwestHttpClient::new()))
-        // Closing the last window must not quit: the tray (Task 14) reopens
-        // it. GPUI's default quits on last-window-close off macOS. Quitting
-        // is explicit: the Quit action (secondary-q, app menu) or the tray.
-        .with_quit_mode(QuitMode::Explicit)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            theme::register_fonts(cx);
-            let session =
-                AuthConfig::from_env().map(|cfg| Session::load(cfg, Arc::new(OsKeyStore)));
-            if session.is_none() {
-                log::info!("[auth] Clerk not configured; running local-only");
-            }
-            let model = AppModel::init(radar_core::store::default_path(), session, cx);
+        // Closing the last window must not quit: the tray reopens it.
+        // GPUI's default quits on last-window-close off macOS. Quitting is
+        // explicit: the Quit action (secondary-q, app menu) or the tray.
+        .with_quit_mode(QuitMode::Explicit);
+    // macOS: clicking the Dock icon with no window open brings it back
+    // (Tauri `RunEvent::Reopen`).
+    app.on_reopen(open_main_window);
+    app.run(move |cx| {
+        gpui_kit::init(cx);
+        // Who posts notifications (the Windows AppUserModelID).
+        cx.set_app_identity(INSTANCE_ID, "Radar");
+        theme::register_fonts(cx);
+        let session = AuthConfig::from_env().map(|cfg| Session::load(cfg, Arc::new(OsKeyStore)));
+        if session.is_none() {
+            log::info!("[auth] Clerk not configured; running local-only");
+        }
+        let model = AppModel::init(radar_core::store::default_path(), session, cx);
+        // Before the hooks, so their first status push lands on an icon.
+        tray::init(cx);
+        notify::init(cx);
+        model.update(cx, |m, cx| {
+            m.set_hooks(os_hooks(), cx);
             // A session restored from the keychain syncs right away.
-            model.update(cx, |m, cx| m.start_sync(cx));
-            register_app_actions(cx, |cx| cx.quit());
-            workspace::init(cx);
-            listen_for_instances(rx, cx);
-            if !autostart {
-                open_main_window(cx);
-            }
+            m.start_sync(cx);
         });
+        register_app_actions(cx, |cx| cx.quit());
+        workspace::init(cx);
+        listen_for_instances(rx, cx);
+        scheduler::spawn(cx);
+        scheduler::run_at_launch(cx);
+        if !autostart {
+            open_main_window(cx);
+        }
+    });
+}
+
+/// The real integrations. Only the app installs them; tests use fakes.
+fn os_hooks() -> Hooks {
+    Hooks {
+        briefing: app_model::ingest_runner(),
+        clock: Rc::new(chrono::Local::now),
+        notify: Rc::new(notify::briefing_ready),
+        tray: Rc::new(tray::set_status),
+        wake: Some(Arc::new(radar_core::schedule_wake::sync_schedule_wake)),
+        autostart: autostart::Backend::os(),
+    }
 }
 
 /// Binds `Quit` to `secondary-q` (cmd-q / ctrl-q) and installs the app menu
@@ -161,10 +190,7 @@ pub fn open_main_window(cx: &mut App) {
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         window.on_window_should_close(cx, |_, cx| {
-            log::info!("[window] main window closed; staying alive");
-            // Store write now, sync push now (JS: flush on `pagehide`). The
-            // app keeps running, so the push finishes on its own.
-            drop(AppModel::global(cx).update(cx, |m, cx| m.flush_now(cx)));
+            flush_on_close(cx);
             true
         });
         cx.new(|cx| Workspace::new(window, cx))
@@ -176,6 +202,37 @@ pub fn open_main_window(cx: &mut App) {
         }
         Err(e) => log::error!("[window] failed to open main window: {e:#}"),
     }
+}
+
+/// The Radar window that has OS focus, if any (JS `document.hasFocus()`).
+pub fn active_radar_window(cx: &mut App) -> Option<AnyWindowHandle> {
+    cx.windows().into_iter().find(|handle| {
+        handle
+            .update(cx, |_, window, _| window.is_window_active())
+            .unwrap_or(false)
+    })
+}
+
+/// The tray's left-click (Tauri `toggle_main_window`): closes the focused
+/// Radar window, otherwise opens or focuses the main window.
+pub fn toggle_main_window(cx: &mut App) {
+    match active_radar_window(cx) {
+        Some(handle) => {
+            flush_on_close(cx);
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
+        None => open_main_window(cx),
+    }
+}
+
+/// A closing window flushes: the store write and the sync push happen now
+/// (JS: flush on `pagehide`). The app keeps running, so the push finishes
+/// on its own.
+fn flush_on_close(cx: &mut App) {
+    log::info!("[window] main window closed; staying alive");
+    drop(AppModel::global(cx).update(cx, |m, cx| m.flush_now(cx)));
 }
 
 fn log_dir() -> PathBuf {

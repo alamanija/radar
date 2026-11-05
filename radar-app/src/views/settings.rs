@@ -6,8 +6,9 @@
 //! [`SettingsView`] lives on the `Workspace` and is dropped whenever another
 //! view is shown, as the JSX controls' state died on unmount. On show,
 //! [`SettingsView::prepare`] builds the inputs, reads the API key status
-//! (keychain, off the UI thread) and the login-item state, and keeps the
-//! controlled inputs (name, role, schedule time) in step with the model.
+//! (keychain) and the login-item state (the model's autostart backend),
+//! both off the UI thread, and keeps the controlled inputs (name, role,
+//! schedule time) in step with the model.
 //!
 //! # Secrets
 //! The API key control only ever holds `{present, preview}`. The typed key
@@ -26,7 +27,7 @@ use crate::app_model::AppModel;
 use crate::bridge;
 use crate::components::icon::IconName;
 use crate::components::toggle::Toggle;
-use crate::platform::{autostart, updater};
+use crate::platform::updater;
 use crate::theme::{self, Tokens};
 use crate::workspace::Workspace;
 use chrono::NaiveTime;
@@ -70,7 +71,8 @@ pub struct Form {
     /// The lens textarea while editing (`LensControl`).
     pub lens: Option<Entity<TextareaState>>,
     pub api: ApiKey,
-    /// Login-item state as the OS reports it (`AutostartToggle`).
+    /// Login-item state as the OS last reported it (`AutostartToggle`);
+    /// off until the first read lands.
     pub autostart: bool,
     /// The model values the controlled fields last agreed on.
     synced: Synced,
@@ -180,7 +182,7 @@ impl Form {
             schedule,
             lens: None,
             api: ApiKey::default(),
-            autostart: autostart::is_enabled(),
+            autostart: false,
             synced,
             _subscriptions: subscriptions,
         }
@@ -194,6 +196,7 @@ impl SettingsView {
         let Some(form) = self.form.as_mut() else {
             self.form = Some(Form::new(window, cx));
             self.refresh_key(cx);
+            self.refresh_autostart(None, cx);
             return;
         };
         let now = synced_of(&AppModel::global(cx).read(cx).model);
@@ -359,12 +362,34 @@ impl SettingsView {
 
     fn toggle_autostart(&mut self, cx: &mut Context<Workspace>) {
         if let Some(f) = self.form() {
-            if let Err(e) = autostart::set(!f.autostart) {
-                log::warn!("[autostart] toggle failed: {e}");
-            }
-            f.autostart = autostart::is_enabled();
+            let want = !f.autostart;
+            self.refresh_autostart(Some(want), cx);
         }
-        cx.notify();
+    }
+
+    /// `AutostartToggle`: sets the login item to `want` (if any), then
+    /// shows what the OS reports. The OS owns the state, so the toggle never
+    /// flips a local copy. The I/O runs on the blocking pool.
+    fn refresh_autostart(&mut self, want: Option<bool>, cx: &mut Context<Workspace>) {
+        let backend = AppModel::global(cx).read(cx).hooks.autostart.clone();
+        cx.spawn(async move |ws, cx| {
+            let enabled = bridge::on_blocking(move || {
+                if let Some(want) = want {
+                    if let Err(e) = (backend.set)(want) {
+                        log::warn!("[autostart] toggle failed: {e:#}");
+                    }
+                }
+                (backend.is_enabled)()
+            })
+            .await;
+            let _ = ws.update(cx, |ws, cx| {
+                if let Some(f) = ws.settings.form() {
+                    f.autostart = enabled;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 

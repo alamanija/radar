@@ -3,8 +3,9 @@
 
 use crate::app_model::{PUSH_DEBOUNCE, SAVE_DEBOUNCE};
 use crate::components::sync_indicator::{indicator, Tone};
+use crate::platform::autostart;
 use crate::test_support::{
-    account, serve_empty, serve_states, session, sign_in_as, stamped, wait_until,
+    account, serve_empty, serve_states, session, settle, sign_in_as, stamped, wait_until,
 };
 use crate::workspace::shell_tests::{boot, Shell};
 use chrono::NaiveTime;
@@ -19,6 +20,7 @@ use radar_core::store;
 use radar_core::sync::SyncStatus;
 use radar_core::types::View;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::Arc;
 
 fn settings(cx: &mut TestAppContext) -> Shell {
@@ -271,14 +273,37 @@ fn schedule_toggle_updates_prefs(cx: &mut TestAppContext) {
     assert_eq!(saved.schedule_enabled, !enabled);
     assert_eq!(saved.schedule_time, "21:45");
 
-    // Open at login shows what the OS reports (the stub says off), and a
-    // toggle re-reads the OS instead of flipping a local mirror.
+    // Open at login shows what the login-item backend reports, and a
+    // toggle re-reads it instead of flipping a local mirror. Both calls run
+    // off the UI thread. The default backend is always off.
     let autostart = |s: &Shell, cx: &mut TestAppContext| {
         s.ws.read_with(cx, |w, _| w.settings.form.as_ref().unwrap().autostart)
     };
     assert!(!autostart(&s, cx));
     click(&s, cx, "settings-autostart");
-    assert!(!autostart(&s, cx), "the stub keeps login items off");
+    settle(cx);
+    assert!(!autostart(&s, cx), "a backend that stays off shows off");
+
+    // A registered login item shows on when Settings opens, and the toggle
+    // goes through the backend.
+    let registered = Arc::new(AtomicBool::new(true));
+    s.model.update(cx, |m, _| {
+        let (read, write) = (registered.clone(), registered.clone());
+        m.hooks.autostart = autostart::Backend {
+            is_enabled: Arc::new(move || read.load(SeqCst)),
+            set: Arc::new(move |on| {
+                write.store(on, SeqCst);
+                Ok(())
+            }),
+        };
+    });
+    s.edit(cx, |m| m.prefs.view = View::Briefing);
+    s.edit(cx, |m| m.prefs.view = View::Settings);
+    s.label(cx, "content-title");
+    wait_until(cx, |cx| autostart(&s, cx));
+    click(&s, cx, "settings-autostart");
+    wait_until(cx, |cx| !autostart(&s, cx));
+    assert!(!registered.load(SeqCst), "the backend was switched off");
 }
 
 #[gpui_kit::test]

@@ -372,6 +372,9 @@ fn header_run_briefing_fetches_and_finishes(cx: &mut TestAppContext) {
     });
     let s = boot(cx);
     s.model.update(cx, |m, cx| {
+        // The real pipeline, against the local mock feed. No categories, so
+        // it never reads the keychain or calls Claude.
+        m.hooks.briefing = crate::app_model::ingest_runner();
         m.update_model(cx, |r| {
             r.add_source("Feed".into(), "tools".into(), Some(server.url("/feed.xml")))
         })

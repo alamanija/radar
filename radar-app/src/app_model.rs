@@ -15,19 +15,28 @@
 //!   (a child module, so it shares this struct's private state). Every
 //!   [`update_model`](AppModel::update_model) also (re)starts the 800 ms
 //!   sync push debounce while signed in.
+//! - Everything outside the process (briefing pipeline, clock, system
+//!   notification, tray, OS wake entry, login item) goes through
+//!   [`Hooks`]. The model starts with [`Hooks::inert`]; `main.rs` installs
+//!   the real ones with [`AppModel::set_hooks`]. Tests install fakes.
 
+use crate::platform::{autostart, tray};
+use crate::scheduler::{self, WakeFn};
 use crate::{bridge, theme};
+use chrono::{DateTime, Local};
+use futures::future::BoxFuture;
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use radar_core::auth::Session;
-use radar_core::ingest;
+use radar_core::ingest::{self, CategoryInput, SourceInput};
 use radar_core::keychain::KeyStore;
-use radar_core::model::{ArticleState, RadarModel};
+use radar_core::model::{ArticleState, BriefingOutcome, RadarModel};
 use radar_core::store;
 use radar_core::sync::queue::SleepFn;
 use radar_core::sync::{article_states, SyncClient, SyncStatus};
-use radar_core::types::Account;
+use radar_core::types::{Account, BriefingResponse};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,6 +53,71 @@ pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(100);
 /// First retry delay after a failed write; doubles up to [`SAVE_RETRY_MAX`].
 pub const SAVE_RETRY_MIN: Duration = Duration::from_secs(1);
 pub const SAVE_RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// Runs a briefing: `(sources, categories, lens)` to the response. The
+/// returned future runs on the tokio runtime.
+pub type BriefingFn = Arc<
+    dyn Fn(
+            Vec<SourceInput>,
+            Vec<CategoryInput>,
+            Option<String>,
+        ) -> BoxFuture<'static, Result<BriefingResponse, String>>
+        + Send
+        + Sync,
+>;
+
+/// Posts the "briefing ready" notification for a finished run.
+pub type NotifyFn = Rc<dyn Fn(&mut App, BriefingOutcome)>;
+
+/// What the model reaches outside the process through, injected so tests
+/// never touch the OS or the network.
+#[derive(Clone)]
+pub struct Hooks {
+    /// The ingest pipeline ([`ingest_runner`] in the app).
+    pub briefing: BriefingFn,
+    /// Local wall clock: the scheduler's "now" and the stamps a finished
+    /// briefing writes.
+    pub clock: Rc<dyn Fn() -> DateTime<Local>>,
+    /// "Radar briefing ready" (`notify::briefing_ready`).
+    pub notify: NotifyFn,
+    /// Shows `(title, tooltip)` on the tray icon (`tray::set_status`).
+    pub tray: Rc<dyn Fn(Option<String>, String)>,
+    /// Syncs the OS wake entry (`schedule_wake::sync_schedule_wake`);
+    /// `None` leaves it alone.
+    pub wake: Option<WakeFn>,
+    /// The login item (`platform::autostart`).
+    pub autostart: autostart::Backend,
+}
+
+impl Hooks {
+    /// Nothing leaves the process: briefings come back empty, and the
+    /// notification, tray and wake entry are skipped. The login item reads
+    /// as off. The clock is the real one.
+    pub fn inert() -> Self {
+        Self {
+            briefing: Arc::new(|_, _, _| {
+                Box::pin(async {
+                    Ok(BriefingResponse {
+                        articles: Vec::new(),
+                        errors: Vec::new(),
+                        fetched_at: chrono::Utc::now(),
+                    })
+                })
+            }),
+            clock: Rc::new(Local::now),
+            notify: Rc::new(|_, _| {}),
+            tray: Rc::new(|_, _| {}),
+            wake: None,
+            autostart: autostart::Backend::off(),
+        }
+    }
+}
+
+/// The real pipeline, `ingest::run_briefing`: it fetches every feed and,
+/// with categories set, reads the API key from the OS keychain.
+pub fn ingest_runner() -> BriefingFn {
+    Arc::new(|sources, categories, lens| Box::pin(ingest::run_briefing(sources, categories, lens)))
+}
 
 pub struct AppModel {
     pub model: RadarModel,
@@ -76,6 +150,13 @@ pub struct AppModel {
     pub server_base: String,
     /// The browser sign-in (`Session::sign_in`); tests inject failures.
     pub sign_in_impl: SignInFn,
+    /// OS and pipeline integrations ([`Hooks::inert`] until `main.rs`
+    /// installs the real ones).
+    pub hooks: Hooks,
+    /// The tray title and tooltip last pushed.
+    tray_shown: Option<tray::Status>,
+    /// Daily-slot, run-at-launch and wake-sync bookkeeping.
+    pub(crate) schedule: scheduler::State,
     /// Backoff sleep handed to the sync client; tests use an instant one.
     pub sync_sleep: Option<SleepFn>,
     /// Persisted offline sync queue (the store's `sync-queue` key, opaque JS
@@ -138,6 +219,9 @@ impl AppModel {
             key_store: sync_lifecycle::default_key_store(),
             server_base: radar_core::sync::server_url(),
             sign_in_impl: sync_lifecycle::browser_sign_in(),
+            hooks: Hooks::inert(),
+            tray_shown: None,
+            schedule: scheduler::State::default(),
             sync_sleep: None,
             sync_queue,
             saved_queue_rev: 0,
@@ -195,7 +279,40 @@ impl AppModel {
         cx.notify();
         self.schedule_save(cx);
         self.schedule_push(cx);
+        self.sync_platform(cx);
         out
+    }
+
+    /// Installs `hooks` (`main.rs`: the real integrations), then brings the
+    /// tray and the OS wake entry in step with the model, as the JS effects
+    /// did once `ready` was set.
+    pub fn set_hooks(&mut self, hooks: Hooks, cx: &mut Context<Self>) {
+        self.hooks = hooks;
+        self.tray_shown = None;
+        self.schedule.forget_wake();
+        self.sync_platform(cx);
+    }
+
+    /// Local wall-clock time from the injected clock.
+    pub fn now(&self) -> DateTime<Local> {
+        (self.hooks.clock)()
+    }
+
+    /// Once ready, after every change: the tray shows the current status
+    /// (pushed only when it changed: toggles, briefings, archive pulls),
+    /// and the OS wake entry follows the schedule prefs.
+    fn sync_platform(&mut self, cx: &mut Context<Self>) {
+        if !self.ready {
+            return;
+        }
+        let status = tray::status(&self.model, self.now().timestamp_millis());
+        if self.tray_shown.as_ref() != Some(&status) {
+            (self.hooks.tray)(status.0.clone(), status.1.clone());
+            self.tray_shown = Some(status);
+        }
+        if let Some(wake) = &self.hooks.wake {
+            self.schedule.sync_wake(&self.model.prefs, wake, cx);
+        }
     }
 
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
@@ -251,11 +368,15 @@ impl AppModel {
         })
     }
 
-    /// Runs one briefing: `begin_briefing`, the ingest pipeline on the
-    /// tokio runtime, then `finish_briefing` (or `fail_briefing`). Does
-    /// nothing while a briefing is already running. The header button and
-    /// the `RunBriefing` action call it; Task 14 adds the notification and
-    /// tray refresh.
+    /// Runs one briefing. The single path for the header button, the tray,
+    /// run-at-launch and the scheduler; it works with no window open, and
+    /// does nothing while a briefing is already running.
+    /// 1. `begin_briefing`.
+    /// 2. The injected runner (`ingest::run_briefing`) on tokio.
+    /// 3. `finish_briefing` (or `fail_briefing`), stamped by the injected
+    ///    clock. As a model change it is saved and refreshes the tray.
+    /// 4. The "briefing ready" notification, when the run brought new
+    ///    articles and no Radar window has focus.
     pub fn run_briefing(&mut self, cx: &mut Context<Self>) {
         if self.model.scanning {
             return;
@@ -263,11 +384,12 @@ impl AppModel {
         let (sources, categories, lens, attempted) = self.model.briefing_inputs();
         log::info!("[briefing] started ({} sources)", sources.len());
         self.update_model(cx, RadarModel::begin_briefing);
+        let run = (self.hooks.briefing)(sources, categories, lens);
         cx.spawn(async move |this, cx| {
-            let result = bridge::on_rt(ingest::run_briefing(sources, categories, lens)).await;
-            let now_ms = chrono::Utc::now().timestamp_millis();
+            let result = bridge::on_rt(run).await;
             let _ = this.update(cx, |this, cx| {
-                this.update_model(cx, |m| match result {
+                let now_ms = this.now().timestamp_millis();
+                let outcome = this.update_model(cx, |m| match result {
                     Ok(resp) => {
                         let out = m.finish_briefing(resp, &attempted, now_ms);
                         log::info!(
@@ -276,12 +398,18 @@ impl AppModel {
                             out.total,
                             m.briefing_errors.len()
                         );
+                        Some(out)
                     }
                     Err(e) => {
                         log::error!("[briefing] failed: {e}");
                         m.fail_briefing(&e);
+                        None
                     }
-                })
+                });
+                let fresh = outcome.filter(|o| o.new_count > 0);
+                if let Some(out) = fresh.filter(|_| crate::active_radar_window(cx).is_none()) {
+                    (this.hooks.notify)(cx, out);
+                }
             });
         })
         .detach();
@@ -392,6 +520,8 @@ impl SaveJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{at, faked_model, wait_until, Fakes};
+    use crate::workspace::shell_tests::article;
     use gpui_kit::TestAppContext;
     use std::path::Path;
 
@@ -558,5 +688,142 @@ mod tests {
             })
         });
         cx.read(|cx| assert_eq!(theme::t(cx).row_h, gpui_kit::px(36.)));
+    }
+
+    fn two_articles() -> Vec<radar_core::types::Article> {
+        vec![article(1, "tools", false), article(2, "tools", false)]
+    }
+
+    fn run_to_end(model: &Entity<AppModel>, cx: &mut TestAppContext) {
+        model.update(cx, |m, cx| m.run_briefing(cx));
+        wait_until(cx, |cx| !model.read_with(cx, |m, _| m.model.scanning));
+    }
+
+    /// A window that isn't the main window, for focus tests.
+    struct Blank;
+
+    impl gpui_kit::Render for Blank {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut Context<Self>,
+        ) -> impl gpui_kit::IntoElement {
+            gpui_kit::div()
+        }
+    }
+
+    /// Review Focus 2: the window is closed while a briefing runs (or the
+    /// scheduler fires). The model still updates, persists and notifies.
+    #[gpui_kit::test]
+    fn briefing_completes_with_no_window(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = Fakes::default();
+        let model = faked_model(cx, &dir, &fakes, two_articles(), at(9, 0));
+        assert!(cx.windows().is_empty());
+
+        run_to_end(&model, cx);
+        model.read_with(cx, |m, _| {
+            assert_eq!(m.model.articles.len(), 2);
+            assert_eq!(m.model.archives.len(), 1);
+            assert_eq!(m.model.last_run_at_ms(), Some(at(9, 0).timestamp_millis()));
+        });
+        cx.executor().advance_clock(SAVE_DEBOUNCE);
+        cx.run_until_parked();
+        let saved = store::load(&dir.path().join("radar.json"));
+        assert_eq!(saved.articles.len(), 2);
+        assert_eq!(saved.archives.len(), 1);
+        assert_eq!(fakes.runs(), 1);
+        assert_eq!(
+            *fakes.notified.borrow(),
+            vec![BriefingOutcome {
+                new_count: 2,
+                total: 2,
+                source_count: 1
+            }]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn run_briefing_ignored_while_scanning(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = Fakes::default();
+        let model = faked_model(cx, &dir, &fakes, two_articles(), at(9, 0));
+        model.update(cx, |m, cx| {
+            m.run_briefing(cx);
+            m.run_briefing(cx);
+        });
+        assert_eq!(fakes.runs(), 1);
+        wait_until(cx, |cx| !model.read_with(cx, |m, _| m.model.scanning));
+        assert_eq!(model.read_with(cx, |m, _| m.model.archives.len()), 1);
+
+        run_to_end(&model, cx);
+        assert_eq!(fakes.runs(), 2, "a finished run doesn't block the next");
+    }
+
+    #[gpui_kit::test]
+    fn notification_suppressed_when_window_active(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = Fakes::default();
+        let model = faked_model(cx, &dir, &fakes, two_articles(), at(9, 0));
+        let window: gpui_kit::AnyWindowHandle = cx
+            .update(|cx| cx.open_window(Default::default(), |_, cx| cx.new(|_| Blank)))
+            .unwrap()
+            .into();
+
+        run_to_end(&model, cx);
+        assert_eq!(
+            fakes.notified.borrow().len(),
+            1,
+            "an open window without focus still gets the banner"
+        );
+
+        cx.update_window(window, |_, w, _| w.activate_window())
+            .unwrap();
+        cx.run_until_parked();
+        // Fresh ids again, so the run counts as new.
+        model.update(cx, |m, cx| m.update_model(cx, |r| r.articles.clear()));
+        run_to_end(&model, cx);
+        assert_eq!(model.read_with(cx, |m, _| m.model.archives.len()), 2);
+        assert_eq!(
+            fakes.notified.borrow().len(),
+            1,
+            "the focused window shows the briefing itself"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn tray_status_updates_on_toggle_read(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = Fakes::default();
+        let model = cx.update(|cx| AppModel::init(dir.path().join("radar.json"), None, cx));
+        model.update(cx, |m, cx| {
+            m.set_hooks(fakes.hooks(Vec::new(), at(9, 0)), cx)
+        });
+        assert_eq!(
+            fakes.tray_now(),
+            Some((None, "Radar — all caught up · last run never".into())),
+            "installing the hooks shows the current state"
+        );
+
+        model.update(cx, |m, cx| {
+            m.update_model(cx, |r| r.articles = two_articles())
+        });
+        assert_eq!(fakes.tray_now().unwrap().0.as_deref(), Some("2"));
+        model.update(cx, |m, cx| m.toggle_read(cx, 1));
+        let (title, tooltip) = fakes.tray_now().unwrap();
+        assert_eq!(title.as_deref(), Some("1"));
+        assert!(
+            tooltip.starts_with("Radar — 1 unread · last run never\n\nFeed — Article 1"),
+            "{tooltip}"
+        );
+
+        let pushes = fakes.tray.borrow().len();
+        model.update(cx, |m, cx| {
+            m.update_model(cx, |r| {
+                r.prefs.density = radar_core::types::Density::Compact
+            })
+        });
+        assert_eq!(fakes.tray.borrow().len(), pushes, "same status, no push");
     }
 }
