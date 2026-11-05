@@ -26,6 +26,11 @@ use std::time::Duration;
 /// Delay between the last mutation and the write to disk.
 #[allow(dead_code)] // only reached via update_model until Task 8
 pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(100);
+/// First retry delay after a failed write; doubles up to [`SAVE_RETRY_MAX`].
+#[allow(dead_code)]
+pub const SAVE_RETRY_MIN: Duration = Duration::from_secs(1);
+#[allow(dead_code)]
+pub const SAVE_RETRY_MAX: Duration = Duration::from_secs(60);
 
 // session/account/sync/sync_status are read from Task 8 (sidebar footer)
 // and Task 12 (sync wiring) on.
@@ -129,14 +134,31 @@ impl AppModel {
             return;
         }
         self.dirty = true;
-        // Dropping the previous task cancels its pending timer.
+        // Dropping the previous task cancels its pending timer (or its
+        // not-yet-started write; `flush_now` and the newer task cover that,
+        // because a taken-but-unwritten generation keeps `save_gen` ahead of
+        // `written_gen`, and `dirty` is true again).
         self.save_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SAVE_DEBOUNCE).await;
-            let Ok(job) = this.update(cx, |this, _| this.take_save_job()) else {
-                return;
-            };
-            if let Some(job) = job {
-                cx.background_spawn(async move { job.run() }).await;
+            let mut delay = SAVE_DEBOUNCE;
+            loop {
+                cx.background_executor().timer(delay).await;
+                let Ok(Some(job)) = this.update(cx, |this, _| this.take_save_job()) else {
+                    return;
+                };
+                let path = job.path.clone();
+                match cx.background_spawn(async move { job.run() }).await {
+                    Ok(()) => return,
+                    Err(e) => {
+                        delay = next_retry(delay);
+                        log::error!(
+                            "[store] save to {} failed: {e}; retrying in {delay:?}",
+                            path.display()
+                        );
+                        if this.update(cx, |this, _| this.dirty = true).is_err() {
+                            return;
+                        }
+                    }
+                }
             }
         }));
     }
@@ -155,12 +177,40 @@ impl AppModel {
         })
     }
 
-    /// Writes pending changes synchronously (app quit).
+    /// Writes everything not yet on disk, synchronously (app quit).
+    ///
+    /// It runs inside the quit callback, so by the time the quit future is
+    /// returned there is nothing left pending: GPUI only polls quit futures
+    /// for `SHUTDOWN_TIMEOUT` (200 ms), too short to trust with a large
+    /// archive write.
     fn flush_now(&mut self) {
+        // Cancels a pending timer or a write that hasn't started yet.
         self.save_task = None;
-        if let Some(job) = self.take_save_job() {
-            job.run();
+        let written_gen = self.written_gen.clone();
+        // Waits for a write already running on the background executor.
+        let mut written = lock(&written_gen);
+        if self.save_gen > *written {
+            // A taken snapshot never landed (cancelled or failed).
+            self.dirty = true;
         }
+        if let Some(job) = self.take_save_job() {
+            if let Err(e) = job.run_locked(&mut written) {
+                log::error!("[store] final save to {} failed: {e}", job.path.display());
+            }
+        }
+    }
+}
+
+fn lock(m: &Mutex<u64>) -> std::sync::MutexGuard<'_, u64> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[allow(dead_code)]
+fn next_retry(prev: Duration) -> Duration {
+    if prev < SAVE_RETRY_MIN {
+        SAVE_RETRY_MIN
+    } else {
+        (prev * 2).min(SAVE_RETRY_MAX)
     }
 }
 
@@ -172,15 +222,21 @@ struct SaveJob {
 }
 
 impl SaveJob {
-    fn run(self) {
-        let mut written = self.written_gen.lock().unwrap_or_else(|e| e.into_inner());
+    /// Writes unless a newer generation already landed.
+    #[allow(dead_code)]
+    fn run(&self) -> std::io::Result<()> {
+        let written_gen = self.written_gen.clone();
+        let mut written = lock(&written_gen);
+        self.run_locked(&mut written)
+    }
+
+    fn run_locked(&self, written: &mut u64) -> std::io::Result<()> {
         if self.generation <= *written {
-            return;
+            return Ok(());
         }
-        match store::save(&self.path, &self.snap) {
-            Ok(()) => *written = self.generation,
-            Err(e) => log::error!("[store] save to {} failed: {e}", self.path.display()),
-        }
+        store::save(&self.path, &self.snap)?;
+        *written = self.generation;
+        Ok(())
     }
 }
 
@@ -255,6 +311,60 @@ mod tests {
         add_one(&model, cx);
         assert!(!path.exists());
         cx.quit();
+        assert_eq!(sources_on_disk(&path), 1);
+    }
+
+    /// The debounced task took the snapshot, then got cancelled before its
+    /// background write ran. GPUI's test scheduler can't stop between those
+    /// two steps (`advance_clock` drains every runnable task once the timer
+    /// fires), so the test takes and drops the job at the same seam.
+    #[gpui_kit::test]
+    fn quit_flush_writes_job_taken_but_cancelled(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radar.json");
+        let model = cx.update(|cx| AppModel::init(path.clone(), None, cx));
+        add_one(&model, cx);
+        model.update(cx, |m, _| {
+            let job = m.take_save_job();
+            assert!(job.is_some());
+            m.save_task = None; // cancelled: the job never runs
+        });
+        assert!(!path.exists());
+        cx.quit();
+        assert_eq!(sources_on_disk(&path), 1);
+    }
+
+    #[gpui_kit::test]
+    fn failed_save_is_retried(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radar.json");
+        let model = cx.update(|cx| AppModel::init(path.clone(), None, cx));
+        // A directory where the file belongs makes store::save fail.
+        std::fs::create_dir(&path).unwrap();
+
+        add_one(&model, cx);
+        cx.executor().advance_clock(SAVE_DEBOUNCE);
+        cx.run_until_parked();
+        assert!(path.is_dir(), "first attempt must have failed");
+
+        std::fs::remove_dir(&path).unwrap();
+        cx.executor().advance_clock(SAVE_RETRY_MIN);
+        cx.run_until_parked();
+        assert_eq!(sources_on_disk(&path), 1);
+    }
+
+    #[gpui_kit::test]
+    fn quit_after_failed_save_writes_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radar.json");
+        let model = cx.update(|cx| AppModel::init(path.clone(), None, cx));
+        std::fs::create_dir(&path).unwrap();
+        add_one(&model, cx);
+        cx.executor().advance_clock(SAVE_DEBOUNCE);
+        cx.run_until_parked();
+        assert!(path.is_dir());
+        std::fs::remove_dir(&path).unwrap();
+        cx.quit(); // before the retry timer fires
         assert_eq!(sources_on_disk(&path), 1);
     }
 
