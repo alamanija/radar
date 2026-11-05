@@ -6143,6 +6143,7 @@ name = "radar-app"
 version = "0.2.22"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "embed-resource",

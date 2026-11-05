@@ -271,9 +271,14 @@ fn schedule_toggle_updates_prefs(cx: &mut TestAppContext) {
     assert_eq!(saved.schedule_enabled, !enabled);
     assert_eq!(saved.schedule_time, "21:45");
 
-    // Open at login reads the OS (stubbed off); toggling keeps the OS truth.
+    // Open at login shows what the OS reports (the stub says off), and a
+    // toggle re-reads the OS instead of flipping a local mirror.
+    let autostart = |s: &Shell, cx: &mut TestAppContext| {
+        s.ws.read_with(cx, |w, _| w.settings.form.as_ref().unwrap().autostart)
+    };
+    assert!(!autostart(&s, cx));
     click(&s, cx, "settings-autostart");
-    assert!(s.exists(cx, "settings-autostart"));
+    assert!(!autostart(&s, cx), "the stub keeps login items off");
 }
 
 #[gpui_kit::test]

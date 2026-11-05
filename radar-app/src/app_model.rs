@@ -36,7 +36,7 @@ mod sync_lifecycle;
 
 #[cfg(test)]
 pub use sync_lifecycle::PUSH_DEBOUNCE;
-use sync_lifecycle::{Lifecycle, PersistedQueue, QueueMirror};
+use sync_lifecycle::{Lifecycle, PersistedQueue, QueueMirror, RuntimeWork};
 pub use sync_lifecycle::{SignInFn, SyncResources};
 
 /// Delay between the last mutation and the write to disk.
@@ -97,6 +97,8 @@ pub struct AppModel {
     drained_backlog: Vec<(String, Value)>,
     /// The keychain delete of the last sign-out (a new sign-in waits on it).
     sign_out_task: Option<Task<()>>,
+    /// Tokio work of the signed-in session, aborted at account boundaries.
+    rt_work: RuntimeWork,
     /// The pending debounced save; replacing it cancels the previous one.
     save_task: Option<Task<()>>,
     /// Unsaved changes exist (cleared when a snapshot is taken for writing).
@@ -145,6 +147,7 @@ impl AppModel {
             resource_waiters: Vec::new(),
             drained_backlog: Vec::new(),
             sign_out_task: None,
+            rt_work: RuntimeWork::default(),
             save_task: None,
             dirty: false,
             save_gen: 0,
@@ -304,22 +307,22 @@ impl AppModel {
     }
 
     /// One toggle, one PATCH. The request runs on the tokio runtime (never
-    /// the UI thread); `SyncClient::mutate` queues it on a transient
-    /// failure. Without a sync client (signed out) nothing leaves the app.
+    /// the UI thread) and is aborted at an account boundary;
+    /// `SyncClient::mutate` queues it on a transient failure. Without a sync
+    /// client (signed out) nothing leaves the app.
     fn patch_article_state(&self, cx: &mut Context<Self>, out: Option<(String, ArticleState)>) {
         let (Some(client), Some((id, state))) = (self.sync.clone(), out) else {
             return;
         };
-        cx.spawn(async move |this, cx| {
-            let res =
-                bridge::on_rt(async move { article_states::patch(&client, &id, state).await });
-            match res.await {
-                Ok(_) => {}
-                Err(radar_core::sync::SyncError::NotSignedIn) => {
-                    let _ = this.update(cx, |m, cx| m.check_session(cx));
-                }
-                Err(e) => log::warn!("[sync] article state patch failed: {e}"),
+        let res = self
+            .rt_work
+            .spawn(async move { article_states::patch(&client, &id, state).await });
+        cx.spawn(async move |this, cx| match res.await {
+            None | Some(Ok(_)) => {}
+            Some(Err(radar_core::sync::SyncError::NotSignedIn)) => {
+                let _ = this.update(cx, |m, cx| m.check_session(cx));
             }
+            Some(Err(e)) => log::warn!("[sync] article state patch failed: {e}"),
         })
         .detach();
     }

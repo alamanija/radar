@@ -7,17 +7,20 @@ use super::super::AppModel;
 use super::*;
 use crate::app_model::SAVE_DEBOUNCE;
 use crate::test_support::{
-    account, serve_empty, serve_states, session, settle, sign_in_as, stamped, wait_until,
+    account, id_token, serve_empty, serve_states, session, session_with, settle, sign_in_as,
+    stamped, wait_until,
 };
 use gpui_kit::{Entity, TestAppContext};
 use httpmock::prelude::*;
 use radar_core::keychain::{KeyStore, CLERK_OAUTH_USER};
 use radar_core::store;
 use radar_core::sync::resource::SyncResource;
-use radar_core::sync::resources::{CategoriesRes, PrefsRes};
-use radar_core::types::Prefs;
+use radar_core::sync::resources::{ArchivesRes, CategoriesRes, PrefsRes};
+use radar_core::types::{Archive, Prefs, SourceHealth, Theme, View};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 struct Host {
     _dir: tempfile::TempDir,
@@ -507,4 +510,270 @@ fn lost_session_moves_to_signed_out(cx: &mut TestAppContext) {
         assert!(m.hydrated(), "back to local-only");
     });
     assert!(keys.get(CLERK_OAUTH_USER).unwrap().is_none());
+}
+
+/// Every resource GET except `except` answers 404 (article states: empty),
+/// and the prefs seed PUT is echoed.
+fn serve_empty_except(server: &MockServer, except: &str) {
+    let paths = [
+        "/sync/profile",
+        "/sync/categories",
+        "/sync/sources",
+        "/sync/prefs",
+        "/sync/archives",
+    ];
+    not_found(
+        server,
+        &paths
+            .into_iter()
+            .filter(|p| *p != except)
+            .collect::<Vec<_>>(),
+    );
+    serve_states(server, json!([]));
+    if except != "/sync/prefs" {
+        echo_prefs(server);
+    }
+}
+
+#[gpui_kit::test]
+fn prefs_pull_keeps_per_device_prefs_changed_meanwhile(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty_except(&server, "/sync/prefs");
+    let mut remote = PrefsRes::push_body(&Prefs::default());
+    remote["prefs"]["theme"] = json!("dark");
+    let get = server.mock(|when, then| {
+        when.method(GET).path("/sync/prefs");
+        then.status(200)
+            .delay(Duration::from_millis(600))
+            .json_body(stamped(remote.clone(), "p1"));
+    });
+
+    let h = host(cx);
+    sign_in_as(&h.model, cx, &server.base_url(), "user_1", "at");
+    wait_until(cx, |_| get.calls() == 1);
+    assert!(h.read(cx, |m| m.resources_out), "the pull is still running");
+    // Per-device navigation while the prefs GET is in flight.
+    h.edit(cx, |r| {
+        r.prefs.view = View::Archive;
+        r.prefs.sidebar_collapsed = true;
+    });
+    wait_until(cx, |cx| h.read(cx, |m| m.resources.prefs.pulled));
+    h.read(cx, |m| {
+        assert_eq!(m.model.prefs.theme, Theme::Dark, "the synced prefs landed");
+        assert_eq!(m.model.prefs.view, View::Archive, "navigation survives");
+        assert!(
+            m.model.prefs.sidebar_collapsed,
+            "the sidebar state survives"
+        );
+        assert!(!m.resources.prefs.needs_push(&m.model.prefs));
+    });
+}
+
+fn archive(id: i64, run_at: &str) -> Archive {
+    Archive {
+        id,
+        run_at: run_at.into(),
+        articles: vec![],
+        errors: vec![],
+    }
+}
+
+#[gpui_kit::test]
+fn archive_added_during_pull_survives_and_is_pushed(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty_except(&server, "/sync/archives");
+    let remote = json!({"archives": [archive(1, "2026-11-01T07:30:00Z")]});
+    let get = server.mock(|when, then| {
+        when.method(GET).path("/sync/archives");
+        then.status(200)
+            .delay(Duration::from_millis(600))
+            .json_body(stamped(remote.clone(), "a1"));
+    });
+
+    let h = host(cx);
+    sign_in_as(&h.model, cx, &server.base_url(), "user_1", "at");
+    wait_until(cx, |_| get.calls() == 1);
+    assert!(h.read(cx, |m| m.resources_out), "the pull is still running");
+    // A briefing finishes while the archives GET is in flight.
+    h.edit(cx, |r| {
+        r.archives.insert(0, archive(2, "2026-11-04T07:30:00Z"))
+    });
+    wait_until(cx, |cx| h.read(cx, |m| m.resources.archives.pulled));
+
+    let ids = h.read(cx, |m| {
+        m.model.archives.iter().map(|a| a.id).collect::<Vec<_>>()
+    });
+    assert_eq!(
+        ids,
+        vec![2, 1],
+        "the new snapshot joins the server's, newest first"
+    );
+    assert!(
+        h.read(cx, |m| m.resources.archives.needs_push(&m.model.archives)),
+        "the server doesn't have the new snapshot yet"
+    );
+    let local = h.read(cx, |m| ArchivesRes::push_body(&m.model.archives));
+    let put = server.mock(|when, then| {
+        when.method(PUT)
+            .path("/sync/archives")
+            .header("if-match", "W/\"a1\"")
+            .json_body(local.clone());
+        then.status(200).json_body(stamped(local.clone(), "a2"));
+    });
+    cx.executor().advance_clock(PUSH_DEBOUNCE);
+    wait_until(cx, |_| put.calls() == 1);
+}
+
+#[gpui_kit::test]
+fn source_stamps_during_pull_survive(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    serve_empty_except(&server, "/sync/sources");
+    let remote = json!({"sources": [
+        {"id": 1, "name": "Dieline", "category": "packaging", "feedUrl": null,
+         "enabled": true, "isDefault": false}
+    ]});
+    let get = server.mock(|when, then| {
+        when.method(GET).path("/sync/sources");
+        then.status(200)
+            .delay(Duration::from_millis(600))
+            .json_body(stamped(remote.clone(), "s1"));
+    });
+
+    let h = host(cx);
+    h.edit(cx, |r| {
+        r.add_source("Dieline".into(), "packaging".into(), None);
+    });
+    sign_in_as(&h.model, cx, &server.base_url(), "user_1", "at");
+    wait_until(cx, |_| get.calls() == 1);
+    assert!(h.read(cx, |m| m.resources_out), "the pull is still running");
+    // A briefing stamps the source while the sources GET is in flight.
+    h.edit(cx, |r| {
+        r.sources[0].last_fetch_at = Some(1_800_000_000_000);
+        r.sources[0].health = SourceHealth::Warn;
+    });
+    wait_until(cx, |cx| h.read(cx, |m| m.resources.sources.pulled));
+    h.read(cx, |m| {
+        let s = &m.model.sources[0];
+        assert_eq!(s.last_fetch_at, Some(1_800_000_000_000));
+        assert_eq!(s.health, SourceHealth::Warn);
+        assert!(
+            !m.resources.sources.needs_push(&m.model.sources),
+            "per-device fields never make sources dirty"
+        );
+    });
+}
+
+/// Account A's drain is asleep in its retry backoff when A signs out and B
+/// signs in on the same `Session` (clones share tokens). A's queued write
+/// must never go out afterwards, least of all with B's bearer token.
+#[gpui_kit::test]
+fn account_boundary_aborts_in_flight_drain(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    not_found(
+        &server,
+        &[
+            "/sync/profile",
+            "/sync/categories",
+            "/sync/sources",
+            "/sync/prefs",
+            "/sync/archives",
+        ],
+    );
+    serve_states(&server, json!([]));
+    echo_prefs(&server);
+    let as_a = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/sync/article-states")
+            .header("authorization", "Bearer at-a");
+        then.status(503);
+    });
+    let as_b = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/sync/article-states")
+            .header("authorization", "Bearer at-b");
+        then.status(200).json_body(json!({}));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/oauth/token");
+        then.status(200).json_body(json!({
+            "access_token": "at-b",
+            "refresh_token": "rt-b",
+            "expires_in": 3600,
+            "id_token": id_token("user_b"),
+        }));
+    });
+    let file = json!({
+        "version": 1,
+        "sync-queue": [
+            {"id": "q1", "path": "/sync/article-states", "method": "PATCH",
+             "body": {"articleId": "7", "read": true, "bookmarked": false},
+             "groupKey": "PATCH:/sync/article-states:7", "accountId": "user_a",
+             "tries": 0, "queuedAt": 1}
+        ]
+    });
+    let h = host_with(cx, Some(file));
+    let (session, keys) = session_with(&server.base_url(), Some("at-a"), Some("user_a"));
+    let base = server.base_url();
+    h.model.update(cx, |m, cx| {
+        m.session = Some(session.clone());
+        m.account = Some(account("user_a"));
+        m.server_base = base;
+        // The retry backoff: long enough for the account switch to happen.
+        m.sync_sleep = Some(Arc::new(|_| {
+            Box::pin(tokio::time::sleep(Duration::from_secs(3)))
+        }));
+        m.start_sync(cx);
+    });
+    wait_until(cx, |_| as_a.calls() == 1);
+    let boundary = std::time::Instant::now();
+
+    // A signs out; B signs in through the real browser flow on the same
+    // session (the "browser" is this test hitting the loopback callback).
+    h.model.update(cx, |m, cx| m.sign_out(cx));
+    wait_until(cx, |_| !session.is_signed_in());
+    h.model.update(cx, |m, cx| m.sign_in(cx));
+    wait_until(cx, |cx| cx.opened_url().is_some());
+    let authorize = url::Url::parse(&cx.opened_url().unwrap()).unwrap();
+    let param = |k: &str| {
+        authorize
+            .query_pairs()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.into_owned())
+            .unwrap()
+    };
+    let callback = url::Url::parse(&param("redirect_uri")).unwrap();
+    let state = param("state");
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        let addr = (callback.host_str().unwrap(), callback.port().unwrap());
+        let mut conn = std::net::TcpStream::connect(addr).unwrap();
+        write!(
+            conn,
+            "GET /callback?code=c1&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        )
+        .unwrap();
+        let mut sink = Vec::new();
+        let _ = conn.read_to_end(&mut sink);
+    });
+    wait_until(cx, |cx| {
+        h.read(cx, |m| {
+            m.account.as_ref().is_some_and(|a| a.id == "user_b") && m.resources_pulled
+        })
+    });
+    assert!(
+        session.is_signed_in(),
+        "B is signed in on the shared session"
+    );
+    assert!(keys.get(CLERK_OAUTH_USER).unwrap().is_some());
+
+    // Past the end of A's backoff sleep.
+    while boundary.elapsed() < Duration::from_millis(4000) {
+        settle(cx);
+    }
+    assert_eq!(as_b.calls(), 0, "A's queued write went out with B's token");
+    assert_eq!(
+        as_a.calls(),
+        1,
+        "A's drain did not stop at the account boundary"
+    );
 }

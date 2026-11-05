@@ -50,16 +50,36 @@ pub fn account(id: &str) -> Account {
     }
 }
 
+/// An unsigned id_token naming `sub` (the session reads the account from it).
+pub fn id_token(sub: &str) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    let head = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let body = URL_SAFE_NO_PAD
+        .encode(json!({"sub": sub, "email": format!("{sub}@example.test")}).to_string());
+    format!("{head}.{body}.c2ln")
+}
+
 /// A session on `base` (also its token endpoint) holding `access`, or a
 /// signed-out one for `None`. The tokens live in the returned store.
 pub fn session(base: &str, access: Option<&str>) -> (Session, Arc<MemKeyStore>) {
+    session_with(base, access, None)
+}
+
+/// [`session`] whose tokens carry an id_token for `sub` (queued writes are
+/// then tagged with that account).
+pub fn session_with(
+    base: &str,
+    access: Option<&str>,
+    sub: Option<&str>,
+) -> (Session, Arc<MemKeyStore>) {
     let store = Arc::new(MemKeyStore::new());
     if let Some(access) = access {
         let tokens = Tokens {
             access_token: access.into(),
             refresh_token: Some("rt".into()),
             expires_at: Utc::now().timestamp() + 3600,
-            id_token: None,
+            id_token: sub.map(id_token),
         };
         store
             .set(CLERK_OAUTH_USER, &serde_json::to_string(&tokens).unwrap())

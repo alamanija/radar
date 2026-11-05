@@ -11,7 +11,12 @@
 //!   into the tokio job and handed back). While they are out,
 //!   `AppModel::resources` holds a placeholder and other ops wait.
 //! - `sync_epoch` is bumped on every account boundary. Work that started
-//!   under an older epoch never writes its results back.
+//!   under an older epoch never writes its results back, and its tokio
+//!   tasks are aborted ([`RuntimeWork`]): `Session` clones share their
+//!   tokens, so a request of account A still running after the switch would
+//!   otherwise go out with B's bearer token.
+//! - Results are merged with the *live* model when applied: per-device
+//!   prefs and source stamps, and archives added while the op ran, survive.
 //! - The model is only ever touched on the UI thread. Network work runs on
 //!   tokio and keychain work on its blocking pool, never the UI thread.
 //!   That includes `Session::is_signed_in`, whose mutex `Session` holds
@@ -31,7 +36,9 @@ use radar_core::model::ArticleState;
 use radar_core::sync::article_states;
 use radar_core::sync::queue::{DrainReport, QueuedReq};
 use radar_core::sync::resource::SyncedResource;
-use radar_core::sync::resources::{ArchivesRes, CategoriesRes, PrefsRes, ProfileRes, SourcesRes};
+use radar_core::sync::resources::{
+    ArchivesRes, CategoriesRes, PrefsRes, ProfileRes, SourcesRes, ARCHIVE_CAP,
+};
 use radar_core::sync::{SyncClient, SyncError, SyncStatus};
 use radar_core::types::{Account, Archive, Article, Category, Prefs, Profile, Source};
 use serde_json::Value;
@@ -128,6 +135,93 @@ pub(super) type QueueMirror = Arc<Mutex<PersistedQueue>>;
 
 pub(super) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The tokio tasks of the signed-in session (pulls with their seeding,
+/// pushes, drains, article-state PATCHes). [`abort_all`](Self::abort_all)
+/// runs at every account boundary, so none of them can send another request
+/// for the old account (with the new account's token, since `Session`
+/// clones share tokens).
+#[derive(Clone, Default)]
+pub(super) struct RuntimeWork(Arc<Mutex<Vec<tokio::task::AbortHandle>>>);
+
+impl RuntimeWork {
+    /// Starts `fut` on the runtime right away. Resolves to `None` if it was
+    /// aborted; a panic is resumed in the awaiting task.
+    pub fn spawn<T: Send + 'static>(
+        &self,
+        fut: impl Future<Output = T> + Send + 'static,
+    ) -> impl Future<Output = Option<T>> {
+        let handle = radar_core::runtime().spawn(fut);
+        {
+            let mut tasks = lock(&self.0);
+            tasks.retain(|t| !t.is_finished());
+            tasks.push(handle.abort_handle());
+        }
+        async move {
+            match handle.await {
+                Ok(v) => Some(v),
+                Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                Err(_) => None,
+            }
+        }
+    }
+
+    /// Cancels every task still running (each stops at its next await).
+    pub fn abort_all(&self) {
+        for task in lock(&self.0).drain(..) {
+            task.abort();
+        }
+    }
+}
+
+/// Per-device prefs (`view`, `sidebarCollapsed`) never travel: keep the live
+/// ones, which may have changed while the op ran (JS `setSyncedPrefs` never
+/// touched them).
+fn merge_prefs(synced: Prefs, live: &Prefs) -> Prefs {
+    Prefs {
+        view: live.view,
+        sidebar_collapsed: live.sidebar_collapsed,
+        ..synced
+    }
+}
+
+/// Sources from the server with this device's `lastFetchAt`/`health` as
+/// they are now (a briefing may have stamped them while the op ran).
+fn merge_sources(mut synced: Vec<Source>, live: &[Source]) -> Vec<Source> {
+    for s in &mut synced {
+        if let Some(l) = live.iter().find(|l| l.id == s.id) {
+            s.last_fetch_at = l.last_fetch_at;
+            s.health = l.health;
+        }
+    }
+    synced
+}
+
+fn run_at_ms(a: &Archive) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(&a.run_at)
+        .ok()
+        .map(|t| t.timestamp_millis())
+}
+
+/// The op's archives plus any the live model gained while it ran (a
+/// briefing finished): union by id, the op's copy wins, newest `runAt`
+/// first (unparseable last), capped at [`ARCHIVE_CAP`]. Without new local
+/// archives this is the op's list unchanged.
+fn merge_archives(synced: Vec<Archive>, live: &[Archive]) -> Vec<Archive> {
+    let mut out = synced;
+    let fresh: Vec<Archive> = live
+        .iter()
+        .filter(|l| !out.iter().any(|a| a.id == l.id))
+        .cloned()
+        .collect();
+    if fresh.is_empty() {
+        return out;
+    }
+    out.extend(fresh);
+    out.sort_by_key(|a| std::cmp::Reverse(run_at_ms(a)));
+    out.truncate(ARCHIVE_CAP);
+    out
 }
 
 /// The OS keychain in the app; tests never touch it.
@@ -522,6 +616,10 @@ impl AppModel {
     fn stop_sync(&mut self) {
         self.sync_epoch += 1;
         lock(&self.sync_queue).epoch = self.sync_epoch;
+        // Before anything else: no request of this account may go out after
+        // the boundary (a drain asleep in its backoff would wake up holding
+        // the next account's token).
+        self.rt_work.abort_all();
         self.lifecycle = None;
         self.sync = None;
         self.resources.reset();
@@ -606,10 +704,11 @@ impl AppModel {
         };
         let (result_tx, result_rx) = oneshot::channel();
         let (done_tx, done_rx) = oneshot::channel();
-        radar_core::runtime().spawn(async move {
+        // Detached: the quit hook waits on `done_rx`, not on a GPUI task.
+        drop(self.rt_work.spawn(async move {
             let _ = result_tx.send(job.run().await);
             let _ = done_tx.send(());
-        });
+        }));
         cx.spawn(async move |this, cx| {
             if let Ok((res, out)) = result_rx.await {
                 let _ = this.update(cx, |m, cx| m.finish(epoch, res, out, cx));
@@ -706,14 +805,16 @@ impl AppModel {
                 if let Some(v) = categories {
                     m.categories = v;
                 }
+                // Merged with the live model: the op worked from a snapshot
+                // taken when it started.
                 if let Some(v) = sources {
-                    m.sources = v;
+                    m.sources = merge_sources(v, &m.sources);
                 }
                 if let Some(v) = prefs {
-                    m.prefs = v;
+                    m.prefs = merge_prefs(v, &m.prefs);
                 }
                 if let Some(v) = archives {
-                    m.archives = v;
+                    m.archives = merge_archives(v, &m.archives);
                 }
                 if let Some((server, seeded)) = states {
                     article_states::overlay(&mut m.articles, &server);
@@ -804,13 +905,16 @@ impl AppModel {
 /// Runs one op to completion, waiting for the resources if they are lent.
 async fn run_op(this: &WeakEntity<AppModel>, cx: &mut AsyncApp, epoch: u64, op: Op) {
     loop {
-        let Ok(begin) = this.update(cx, |m, _| m.begin(epoch, op)) else {
+        let Ok((begin, rt)) = this.update(cx, |m, _| (m.begin(epoch, op), m.rt_work.clone()))
+        else {
             return;
         };
         match begin {
             Begin::Started(job) => {
-                let (res, out) = bridge::on_rt(job.run()).await;
-                let _ = this.update(cx, |m, cx| m.finish(epoch, res, out, cx));
+                // `None`: aborted at an account boundary.
+                if let Some((res, out)) = rt.spawn(job.run()).await {
+                    let _ = this.update(cx, |m, cx| m.finish(epoch, res, out, cx));
+                }
                 return;
             }
             Begin::Wait(rx) => {
@@ -827,9 +931,13 @@ async fn run_drain(
     epoch: u64,
     c: &Arc<SyncClient>,
 ) {
+    let Ok(rt) = this.update(cx, |m, _| m.rt_work.clone()) else {
+        return;
+    };
     let client = c.clone();
-    let report = bridge::on_rt(async move { client.drain().await }).await;
-    let _ = this.update(cx, |m, cx| m.finish_drain(epoch, report, cx));
+    if let Some(report) = rt.spawn(async move { client.drain().await }).await {
+        let _ = this.update(cx, |m, cx| m.finish_drain(epoch, report, cx));
+    }
 }
 
 /// The session's worker: one op at a time, in this order on start:
