@@ -240,15 +240,6 @@ impl AppModel {
         self.patch_article_state(cx, out);
     }
 
-    /// Marks an unread article read (opening it in the browser); a read
-    /// article is left alone.
-    pub fn mark_read(&mut self, cx: &mut Context<Self>, id: u64) {
-        let unread = self.model.articles.iter().any(|a| a.id == id && !a.read);
-        if unread {
-            self.toggle_read(cx, id);
-        }
-    }
-
     /// One toggle, one PATCH. The request runs on the tokio runtime (never
     /// the UI thread); `SyncClient::mutate` queues it on a transient
     /// failure. Without a sync client (signed out) nothing leaves the app.

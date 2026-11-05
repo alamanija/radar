@@ -379,15 +379,28 @@ fn card_buttons_do_not_toggle_read(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn card_open_opens_url_and_marks_read(cx: &mut TestAppContext) {
+fn card_open_opens_url_without_changing_read_state(cx: &mut TestAppContext) {
+    let server = MockServer::start();
+    let any = server.mock(|when, then| {
+        when.any_request();
+        then.status(200);
+    });
     let s = boot(cx);
     three_articles(&s, cx);
+    let client = signed_in_client(&server.base_url());
+    s.model.update(cx, |m, _| m.sync = Some(client.clone()));
+
     s.click(cx, "card-1-open");
     assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
-    assert!(s.read(cx, |m| m.model.articles[0].read));
-    // Opening a read article keeps it read.
-    s.click(cx, "card-1-open");
-    assert!(s.read(cx, |m| m.model.articles[0].read));
+    assert!(
+        !s.read(cx, |m| m.model.articles[0].read),
+        "Open must not mark read"
+    );
+    cx.executor().allow_parking();
+    std::thread::sleep(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(any.calls(), 0, "no PATCH for Open");
+    assert!(client.queued().is_empty());
 }
 
 #[gpui_kit::test]

@@ -49,7 +49,8 @@ pub type CardHandler = Rc<dyn Fn(CardEvent, &mut Window, &mut App)>;
 type Emit = Rc<dyn Fn(CardEvent, &mut Window, &mut App, &Article)>;
 
 /// The default effect of a [`CardEvent`] on the global model. `Open` opens
-/// the article's URL and marks an unread live article read.
+/// the article's URL and changes nothing else (`Card.jsx` only calls
+/// `openExternal`).
 pub fn apply_event(cx: &mut App, article: &Article, event: CardEvent, read_only: bool) {
     let id = article.id;
     let model = AppModel::global(cx);
@@ -62,9 +63,6 @@ pub fn apply_event(cx: &mut App, article: &Article, event: CardEvent, read_only:
                 return;
             }
             cx.open_url(&article.url);
-            if !read_only {
-                model.update(cx, |m, cx| m.mark_read(cx, id));
-            }
         }
     }
 }
@@ -683,9 +681,7 @@ mod tests {
         h.live_article(cx, |a| assert!(!a.read && !a.bookmarked));
         h.click(cx, "card-1-open");
         assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
-        h.live_article(cx, |a| {
-            assert!(!a.read, "archive display never marks live state")
-        });
+        h.live_article(cx, |a| assert!(!a.read, "opening never changes read state"));
     }
 
     #[gpui_kit::test]
