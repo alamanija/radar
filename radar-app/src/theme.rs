@@ -7,8 +7,9 @@
 //! accent or density pref changes.
 
 use gpui_kit::component::{Theme as KitTheme, ThemeMode};
-use gpui_kit::{px, App, Global, Hsla, Pixels};
+use gpui_kit::{px, App, BoxShadow, FontFeatures, Global, Hsla, Pixels};
 use radar_core::types::{Accent, Density, Prefs, Theme};
+use std::sync::Arc;
 
 /// UI family (name inside `assets/fonts/Inter-Variable.ttf`).
 pub const FONT_SANS: &str = "Inter";
@@ -41,8 +42,81 @@ pub struct Tokens {
 
 impl Global for Tokens {}
 
+/// Category accent names, in [`Tokens::dot`] order (the `.dot-*` classes).
+pub const DOT_NAMES: [&str; 6] = ["olive", "rust", "slate", "plum", "sand", "ink"];
+
+impl Tokens {
+    /// `.dot-<name>`. An unknown name has no class in the CSS, so it paints
+    /// nothing; `None` here.
+    pub fn dot_for(&self, name: &str) -> Option<Hsla> {
+        DOT_NAMES
+            .iter()
+            .position(|n| *n == name)
+            .map(|i| self.dot[i])
+    }
+}
+
+/// `font-feature-settings: 'cv11', 'ss01'` from the `body` rule, which
+/// every element inherits; `tabular` adds `tnum` (`tabular-nums`). GPUI
+/// replaces rather than merges features, so set the full list.
+pub fn font_features(tabular: bool) -> FontFeatures {
+    let mut tags = vec![("cv11".to_string(), 1), ("ss01".to_string(), 1)];
+    if tabular {
+        tags.push(("tnum".to_string(), 1));
+    }
+    FontFeatures(Arc::new(tags))
+}
+
 fn hex(v: u32) -> Hsla {
     gpui_kit::rgb(v).into()
+}
+
+fn black(alpha: f32) -> Hsla {
+    gpui_kit::hsla(0., 0., 0., alpha)
+}
+
+/// The accent swatch color shown in Tweaks (`light` / `dark` in
+/// `Tweaks.jsx`), i.e. the accent itself in that theme.
+pub fn accent_swatch(accent: Accent, theme: Theme) -> Hsla {
+    let [l, d, ..] = accent_hex(accent);
+    hex(match theme {
+        Theme::Light => l,
+        Theme::Dark => d,
+    })
+}
+
+/// `--shadow-md`. A CSS blur of B px is a Gaussian sigma of B/2, which is
+/// what GPUI's `blur_radius` means.
+pub fn shadow_md(theme: Theme) -> Vec<BoxShadow> {
+    let (near, far) = match theme {
+        Theme::Light => (0.04, 0.04),
+        Theme::Dark => (0.3, 0.2),
+    };
+    vec![
+        BoxShadow::new(px(0.), px(1.), black(near)).blur_radius(px(1.)),
+        BoxShadow::new(px(0.), px(6.), black(far)).blur_radius(px(7.)),
+    ]
+}
+
+/// The Tweaks panel shadow: `0 12px 40px rgba(0,0,0,.18), 0 2px 6px
+/// rgba(0,0,0,.08)` (blur halved, as in [`shadow_md`]).
+pub fn shadow_panel() -> Vec<BoxShadow> {
+    vec![
+        BoxShadow::new(px(0.), px(12.), black(0.18)).blur_radius(px(20.)),
+        BoxShadow::new(px(0.), px(2.), black(0.08)).blur_radius(px(3.)),
+    ]
+}
+
+/// A solid `0 0 0 <width> <color>` ring (`inset` for the inset form). CSS
+/// paints the first of several shadows on top; GPUI paints in order, so
+/// list rings outermost first.
+pub fn ring(width: f32, color: Hsla, inset: bool) -> BoxShadow {
+    let s = BoxShadow::new(px(0.), px(0.), color).spread_radius(px(width));
+    if inset {
+        s.inset()
+    } else {
+        s
+    }
 }
 
 /// `ACCENTS[name]` from `App.jsx`: `(l, d, sl, sd, tl, td)`.
@@ -204,6 +278,18 @@ mod tests {
         assert_eq!(t.bg, h(0x0F1114));
         assert_eq!(t.text, h(0xE8E6E3));
         assert_eq!(t.dot[3], h(0xA77A93));
+    }
+
+    #[test]
+    fn dot_names_and_accent_swatches() {
+        let t = tokens(Theme::Dark, Accent::Camel, Density::Cozy);
+        assert_eq!(t.dot_for("olive"), Some(h(0xA2A468)));
+        assert_eq!(t.dot_for("plum"), Some(h(0xA77A93)));
+        assert_eq!(t.dot_for("ink"), Some(h(0xB8BCC4)));
+        assert_eq!(t.dot_for("camel"), None, "no .dot-camel class");
+        assert_eq!(accent_swatch(Accent::Olive, Theme::Light), h(0x6F7A3A));
+        assert_eq!(accent_swatch(Accent::Olive, Theme::Dark), h(0xA2A468));
+        assert_eq!(accent_swatch(Accent::Ink, Theme::Dark), h(0xC8CBD1));
     }
 
     #[test]

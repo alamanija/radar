@@ -4,16 +4,18 @@
 //! # Pattern for later tasks
 //! - Get the entity anywhere with [`AppModel::global`]; views `cx.observe`
 //!   it to re-render.
-//! - Every change to [`RadarModel`] goes through [`AppModel::update_model`].
-//!   It notifies observers, re-applies theme tokens when the visual prefs
+//! - Every change to [`RadarModel`] goes through [`AppModel::update_model`]
+//!   (views and click handlers use [`AppModel::mutate`], which calls it on
+//!   the global entity). It notifies observers, re-applies theme tokens when the visual prefs
 //!   changed, and (re)schedules one debounced save ([`SAVE_DEBOUNCE`],
 //!   matching plugin-store's 100 ms autoSave). Never mutate `model` directly.
 //! - Hydration ([`AppModel::new`]) only reads the store; `ready` flips true
 //!   once it is done, and saves are gated on it.
 
-use crate::theme;
+use crate::{bridge, theme};
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use radar_core::auth::Session;
+use radar_core::ingest;
 use radar_core::model::RadarModel;
 use radar_core::store;
 use radar_core::sync::{SyncClient, SyncStatus};
@@ -24,25 +26,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Delay between the last mutation and the write to disk.
-#[allow(dead_code)] // only reached via update_model until Task 8
 pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(100);
 /// First retry delay after a failed write; doubles up to [`SAVE_RETRY_MAX`].
-#[allow(dead_code)]
 pub const SAVE_RETRY_MIN: Duration = Duration::from_secs(1);
-#[allow(dead_code)]
 pub const SAVE_RETRY_MAX: Duration = Duration::from_secs(60);
 
-// session/account/sync/sync_status are read from Task 8 (sidebar footer)
-// and Task 12 (sync wiring) on.
-#[allow(dead_code)]
 pub struct AppModel {
     pub model: RadarModel,
     /// `None` when Clerk isn't configured (`AuthConfig::from_env()` is
     /// `None`); the app then runs fully local.
+    #[allow(dead_code)] // read once sync is wired (Task 12)
     pub session: Option<Session>,
     pub account: Option<Account>,
     /// Wired in Task 12. `Arc` so async work can hold it past a borrow.
+    #[allow(dead_code)]
     pub sync: Option<Arc<SyncClient>>,
+    #[allow(dead_code)]
     pub sync_status: SyncStatus,
     /// True once hydration finished; saves are skipped before that.
     pub ready: bool,
@@ -109,8 +108,13 @@ impl AppModel {
         cx.global::<GlobalAppModel>().0.clone()
     }
 
+    /// [`update_model`](Self::update_model) on the global entity; the usual
+    /// call from views and click handlers.
+    pub fn mutate<R>(cx: &mut App, f: impl FnOnce(&mut RadarModel) -> R) -> R {
+        Self::global(cx).update(cx, |m, cx| m.update_model(cx, f))
+    }
+
     /// The one write path for [`RadarModel`].
-    #[allow(dead_code)] // first non-test caller arrives in Task 8
     pub fn update_model<R>(
         &mut self,
         cx: &mut Context<Self>,
@@ -128,7 +132,6 @@ impl AppModel {
         out
     }
 
-    #[allow(dead_code)]
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         if !self.ready {
             return;
@@ -177,6 +180,42 @@ impl AppModel {
         })
     }
 
+    /// Runs one briefing: `begin_briefing`, the ingest pipeline on the
+    /// tokio runtime, then `finish_briefing` (or `fail_briefing`). Does
+    /// nothing while a briefing is already running. The header button and
+    /// the `RunBriefing` action call it; Task 14 adds the notification and
+    /// tray refresh.
+    pub fn run_briefing(&mut self, cx: &mut Context<Self>) {
+        if self.model.scanning {
+            return;
+        }
+        let (sources, categories, lens, attempted) = self.model.briefing_inputs();
+        log::info!("[briefing] started ({} sources)", sources.len());
+        self.update_model(cx, RadarModel::begin_briefing);
+        cx.spawn(async move |this, cx| {
+            let result = bridge::on_rt(ingest::run_briefing(sources, categories, lens)).await;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let _ = this.update(cx, |this, cx| {
+                this.update_model(cx, |m| match result {
+                    Ok(resp) => {
+                        let out = m.finish_briefing(resp, &attempted, now_ms);
+                        log::info!(
+                            "[briefing] done: {} new / {} total, {} errors",
+                            out.new_count,
+                            out.total,
+                            m.briefing_errors.len()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("[briefing] failed: {e}");
+                        m.fail_briefing(&e);
+                    }
+                })
+            });
+        })
+        .detach();
+    }
+
     /// Writes everything not yet on disk, synchronously (app quit).
     ///
     /// It runs inside the quit callback, so by the time the quit future is
@@ -205,7 +244,6 @@ fn lock(m: &Mutex<u64>) -> std::sync::MutexGuard<'_, u64> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[allow(dead_code)]
 fn next_retry(prev: Duration) -> Duration {
     if prev < SAVE_RETRY_MIN {
         SAVE_RETRY_MIN
@@ -223,7 +261,6 @@ struct SaveJob {
 
 impl SaveJob {
     /// Writes unless a newer generation already landed.
-    #[allow(dead_code)]
     fn run(&self) -> std::io::Result<()> {
         let written_gen = self.written_gen.clone();
         let mut written = lock(&written_gen);

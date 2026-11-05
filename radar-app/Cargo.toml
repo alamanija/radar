@@ -14,6 +14,7 @@ path = "src/main.rs"
 radar-core = { path = "../radar-core" }
 gpui-kit = "0.9.0"
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "5"
 flexi_logger = "0.29"
 futures = "0.3"

@@ -3,8 +3,8 @@
 use crate::theme;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::{
-    div, px, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, Role, StatefulInteractiveElement as _, Styled, Window,
+    div, px, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
+    RenderOnce, Role, StatefulInteractiveElement as _, Styled, Window,
 };
 
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;

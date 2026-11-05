@@ -5,12 +5,8 @@ use crate::app_model::{AppModel, SAVE_DEBOUNCE};
 use crate::theme;
 use crate::workspace::{self, OpenSearch, SourcesIntent, ToggleSidebar, Workspace};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions,
-};
-use radar_core::types::{
-    Accent, Account, Article, Category, Density, Theme, View,
-};
+use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions};
+use radar_core::types::{Accent, Account, Article, Category, Density, Theme, View};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -259,7 +255,10 @@ fn tweaks_accent_swatch_updates_prefs_and_tokens(cx: &mut TestAppContext) {
     assert!(!s.exists(cx, "tweaks-panel"));
     s.click(cx, "tweaks-fab");
     assert!(s.exists(cx, "tweaks-panel"));
-    assert!(!s.exists(cx, "tweaks-fab"), "FAB hides while the panel is open");
+    assert!(
+        !s.exists(cx, "tweaks-fab"),
+        "FAB hides while the panel is open"
+    );
 
     s.click(cx, "tweaks-accent-Olive");
     assert_eq!(s.read(cx, |m| m.model.prefs.accent), Accent::Olive);
@@ -316,7 +315,10 @@ fn sidebar_footer_shows_profile_name_or_account(cx: &mut TestAppContext) {
         cx.notify();
     });
     cx.run_until_parked();
-    assert_eq!(s.label(cx, "sidebar-profile-name").as_deref(), Some("grace"));
+    assert_eq!(
+        s.label(cx, "sidebar-profile-name").as_deref(),
+        Some("grace")
+    );
     assert_eq!(
         s.label(cx, "sidebar-profile-role").as_deref(),
         Some("grace@navy.mil")
@@ -327,7 +329,10 @@ fn sidebar_footer_shows_profile_name_or_account(cx: &mut TestAppContext) {
         m.profile.role = "Designer".into();
     });
     assert_eq!(s.label(cx, "sidebar-profile-name").as_deref(), Some("Ada"));
-    assert_eq!(s.label(cx, "sidebar-profile-role").as_deref(), Some("Designer"));
+    assert_eq!(
+        s.label(cx, "sidebar-profile-role").as_deref(),
+        Some("Designer")
+    );
 
     s.click(cx, "sidebar-profile");
     assert_eq!(s.read(cx, |m| m.model.prefs.view), View::Settings);
@@ -388,4 +393,43 @@ fn content_routes_on_view(cx: &mut TestAppContext) {
         s.edit(cx, |m| m.prefs.view = view);
         assert_eq!(s.label(cx, "content-title").as_deref(), Some(title));
     }
+}
+
+#[gpui_kit::test]
+fn search_placeholder_closes_on_scrim_click_and_escape(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    assert!(!s.exists(cx, "search-scrim"));
+    cx.dispatch_action(s.window, OpenSearch);
+    assert!(s.exists(cx, "search-scrim"));
+    s.click(cx, "search-scrim");
+    assert!(!s.ws.read_with(cx, |w, _| w.search_open));
+    assert!(!s.exists(cx, "search-scrim"));
+
+    cx.dispatch_action(s.window, OpenSearch);
+    cx.update_window(s.window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    assert!(!s.ws.read_with(cx, |w, _| w.search_open));
+}
+
+#[gpui_kit::test]
+fn theme_and_briefing_actions_reach_the_model(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    cx.dispatch_action(s.window, workspace::ToggleTheme);
+    assert_eq!(s.read(cx, |m| m.model.prefs.theme), Theme::Dark);
+
+    cx.dispatch_action(s.window, workspace::RunBriefing);
+    assert!(s.read(cx, |m| m.model.scanning));
+    // No sources: the run finishes at once with nothing to archive.
+    cx.executor().allow_parking();
+    for _ in 0..500 {
+        cx.run_until_parked();
+        if !s.read(cx, |m| m.model.scanning) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    s.read(cx, |m| {
+        assert!(!m.model.scanning, "briefing never finished");
+        assert!(m.model.archives.is_empty());
+    });
 }

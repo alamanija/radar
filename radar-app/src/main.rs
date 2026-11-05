@@ -1,7 +1,7 @@
 //! Radar desktop app (GPUI Kit). Boot order: logging → single-instance
 //! check → application (assets, HTTP client, explicit quit mode) → kit init
-//! → fonts → global model → app actions/menu → main window (skipped with
-//! `--autostart`).
+//! → fonts → global model → app actions/menu → shell key bindings → main
+//! window (skipped with `--autostart`).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app_model;
@@ -68,7 +68,7 @@ fn main() {
     }
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(components::icon::AppAssets)
         .with_http_client(Arc::new(bridge::ReqwestHttpClient::new()))
         // Closing the last window must not quit: the tray (Task 14) reopens
         // it. GPUI's default quits on last-window-close off macOS. Quitting
@@ -84,6 +84,7 @@ fn main() {
             }
             AppModel::init(radar_core::store::default_path(), session, cx);
             register_app_actions(cx, |cx| cx.quit());
+            workspace::init(cx);
             listen_for_instances(rx, cx);
             if !autostart {
                 open_main_window(cx);

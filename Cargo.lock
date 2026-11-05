@@ -6143,6 +6143,7 @@ name = "radar-app"
 version = "0.2.22"
 dependencies = [
  "anyhow",
+ "chrono",
  "dirs",
  "embed-resource",
  "flexi_logger",

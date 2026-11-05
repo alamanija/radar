@@ -2,7 +2,7 @@
 //! `assets/icons/ui/` (paths copied verbatim from the JSX).
 //!
 //! `Icon::new(IconName::Search).size(px(14.))` paints in the inherited text
-//! color (CSS `currentColor`) unless `.color(..)` overrides it.
+//! color (CSS `currentColor`); set `text_color` on a parent to change it.
 //!
 //! To add an icon: drop `<name>.svg` into `assets/icons/ui/` (24×24 viewBox,
 //! `stroke="currentColor"`), then add a variant to [`IconName`] and one row
@@ -10,8 +10,8 @@
 //! `icons/ui/<name>.svg`; the `every_icon_is_embedded` test covers the table.
 
 use gpui_kit::{
-    percentage, px, svg, Animation, AnimationExt as _, App, AssetSource, Hsla, IntoElement,
-    Pixels, RenderOnce, SharedString, Styled, Transformation, Window,
+    percentage, px, svg, Animation, AnimationExt as _, App, AssetSource, IntoElement, Pixels,
+    RenderOnce, SharedString, Styled, Transformation, Window,
 };
 use std::borrow::Cow;
 use std::time::Duration;
@@ -98,7 +98,6 @@ impl AssetSource for AppAssets {
 pub struct Icon {
     name: IconName,
     size: Pixels,
-    color: Option<Hsla>,
     spin: bool,
 }
 
@@ -107,18 +106,12 @@ impl Icon {
         Self {
             name,
             size: px(16.),
-            color: None,
             spin: false,
         }
     }
 
     pub fn size(mut self, size: Pixels) -> Self {
         self.size = size;
-        self
-    }
-
-    pub fn color(mut self, color: Hsla) -> Self {
-        self.color = Some(color);
         self
     }
 
@@ -133,7 +126,7 @@ impl RenderOnce for Icon {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         // GPUI's svg paints only with its own text color, so resolve
         // `currentColor` from the inherited text style here.
-        let color = self.color.unwrap_or_else(|| window.text_style().color);
+        let color = window.text_style().color;
         let el = svg()
             .path(self.name.path())
             .size(self.size)
@@ -170,8 +163,8 @@ mod tests {
     #[test]
     fn falls_back_to_kit_icons() {
         let lucide = gpui_kit::assets::IconName::Search;
-        use gpui_kit::assets::IconNamed as _;
         assert!(AppAssets.load(&lucide.path()).unwrap().is_some());
-        assert!(AppAssets.load("icons/ui/nope.svg").unwrap().is_none());
+        // Like the kit's own source, a missing path is an error, not data.
+        assert!(!matches!(AppAssets.load("icons/ui/nope.svg"), Ok(Some(_))));
     }
 }
