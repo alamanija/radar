@@ -3,6 +3,7 @@
 
 use crate::workspace::shell_tests::{article, boot, Shell};
 use crate::workspace::OpenSearch;
+use gpui_kit::base::actions::Confirm;
 use gpui_kit::component::{IndexPath, WindowExt as _};
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{point, px, AppContext as _, MouseButton, Role, TestAppContext};
@@ -238,4 +239,41 @@ fn palette_arrow_keys_move_selection(cx: &mut TestAppContext) {
     // Enter confirms the highlighted row.
     press(&s, cx, "enter");
     assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/2"));
+}
+
+#[gpui_kit::test]
+fn palette_esc_closes_at_once_with_a_query(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    fixture(&s, cx);
+    open(&s, cx);
+    type_query(&s, cx, "bauhaus");
+    press(&s, cx, "escape");
+    assert!(!search_open(&s, cx));
+    assert!(!dialog_open(&s, cx));
+}
+
+#[gpui_kit::test]
+fn palette_choose_uses_the_rows_the_user_saw(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    fixture(&s, cx);
+    open(&s, cx);
+    type_query(&s, cx, "e");
+    assert_eq!(rows(&s, cx)[0], "Bauhaus Rebrand");
+    // A briefing lands and Enter follows before the palette redraws: the
+    // chosen row is the one the user was shown, not whatever now sits at
+    // that index.
+    cx.update_window(s.window, |_, window, cx| {
+        s.model.update(cx, |m, cx| {
+            m.update_model(cx, |r| {
+                let mut n = article(9, "tools", false);
+                n.title = "Fresh arrival".into();
+                r.articles.insert(0, n);
+            })
+        });
+        // Dispatch straight away: `press` would draw a frame first.
+        window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.opened_url().as_deref(), Some("https://x.test/1"));
 }

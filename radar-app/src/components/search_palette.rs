@@ -10,6 +10,7 @@ use super::icon::{Icon, IconName};
 use crate::app_model::AppModel;
 use crate::theme;
 use crate::workspace::Workspace;
+use gpui_kit::base::actions::Cancel;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::{IndexPath, WindowExt as _};
@@ -20,7 +21,8 @@ use gpui_kit::{
 };
 use radar_core::search::{search, Hit};
 use radar_core::types::{Article, Source, View};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 const EMPTY_QUERY_HINT: &str = "Type to search articles and sources.";
 const NO_MATCHES: &str = "No matches.";
@@ -36,7 +38,12 @@ const SOURCES: usize = 1;
 pub struct SearchPalette {
     state: Entity<CommandState>,
     workspace: WeakEntity<Workspace>,
+    /// The hits the last render put on screen; a choice is made from these,
+    /// never from a fresh search of a model that may have moved on.
+    shown: Rc<RefCell<Shown>>,
 }
+
+type Shown = (Vec<Article>, Vec<Source>);
 
 /// Search hits split by kind (articles first, as `search` orders them).
 fn split(query: &str, app: &AppModel) -> (Vec<Article>, Vec<Source>) {
@@ -60,6 +67,7 @@ impl SearchPalette {
         let palette = cx.new(|_| SearchPalette {
             state: state.clone(),
             workspace: workspace.clone(),
+            shown: Rc::default(),
         });
         // The input takes focus once, not on every rebuild of the dialog.
         let focus_input = Cell::new(true);
@@ -89,6 +97,7 @@ impl Render for SearchPalette {
         let t = *theme::t(cx);
         let query = self.state.read(cx).query(cx);
         let (articles, sources) = split(&query, AppModel::global(cx).read(cx));
+        *self.shown.borrow_mut() = (articles.clone(), sources.clone());
 
         let article_group = CommandGroup::new()
             .label("ARTICLES")
@@ -121,9 +130,10 @@ impl Render for SearchPalette {
             }));
 
         let me = cx.entity();
-        let state = self.state.clone();
+        let shown = self.shown.clone();
         let workspace = self.workspace.clone();
-        Command::new(&self.state)
+        let esc_workspace = self.workspace.clone();
+        let command = Command::new(&self.state)
             .group(article_group)
             .group(source_group)
             .filterable(false)
@@ -160,8 +170,16 @@ impl Render for SearchPalette {
                     .child(kbd("esc", &t))
             })
             .on_confirm(move |ix, window, cx| {
-                let query = state.read(cx).query(cx);
-                choose(&query, ix, &workspace, window, cx);
+                choose(&shown.borrow(), ix, &workspace, window, cx);
+            });
+        // Esc closes at once, as in the JSX: take it before the kit's
+        // clear-the-query-first handler sees it.
+        div()
+            .child(command)
+            .capture_action(move |_: &Cancel, window, cx| {
+                window.close_dialog(cx);
+                mark_closed(&esc_workspace, cx);
+                cx.stop_propagation();
             })
     }
 }
@@ -219,14 +237,13 @@ fn result_row(
 /// Enter / click on a row: open the article's URL, or go to Sources; then
 /// close either way (`pick` in the JSX).
 fn choose(
-    query: &str,
+    shown: &Shown,
     ix: IndexPath,
     workspace: &WeakEntity<Workspace>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let app = AppModel::global(cx);
-    let (articles, sources) = split(query, app.read(cx));
+    let (articles, sources) = shown;
     match ix.section {
         ARTICLES => {
             if let Some(a) = articles.get(ix.row).filter(|a| !a.url.is_empty()) {
