@@ -72,6 +72,7 @@ pub struct Card {
     article: Article,
     opts: CardOpts,
     on_event: Option<CardHandler>,
+    scope: SharedString,
 }
 
 impl Card {
@@ -80,10 +81,19 @@ impl Card {
             article: article.clone(),
             opts,
             on_event: None,
+            scope: SharedString::default(),
         }
     }
 
-    #[allow(dead_code)] // Archive (Task 10) routes events through its own handler
+    /// Namespaces the card's element ids (see [`part_id`]) so the same
+    /// article can appear in two places (Saved, an Archive snapshot)
+    /// without colliding. Empty (the default) is the live briefing.
+    pub fn scope(mut self, scope: impl Into<SharedString>) -> Self {
+        self.scope = scope.into();
+        self
+    }
+
+    #[allow(dead_code)] // tests route events through their own handler
     pub fn on_event(mut self, f: impl Fn(CardEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_event = Some(Rc::new(f));
         self
@@ -91,12 +101,18 @@ impl Card {
 }
 
 /// Element id of a part of the card of article `id` (`card-7`,
-/// `card-7-bookmark`, ...).
-pub fn part_id(id: u64, part: &str) -> SharedString {
-    if part.is_empty() {
-        format!("card-{id}").into()
+/// `card-7-bookmark`, ...), prefixed `<scope>/` when the card has a scope
+/// (`archive-3/card-7`).
+pub fn part_id(scope: &str, id: u64, part: &str) -> SharedString {
+    let prefix = if scope.is_empty() {
+        String::new()
     } else {
-        format!("card-{id}-{part}").into()
+        format!("{scope}/")
+    };
+    if part.is_empty() {
+        format!("{prefix}card-{id}").into()
+    } else {
+        format!("{prefix}card-{id}-{part}").into()
     }
 }
 
@@ -118,7 +134,9 @@ impl RenderOnce for Card {
             article: a,
             opts,
             on_event,
+            scope,
         } = self;
+        let ns: &str = &scope;
         let emit = move |ev: CardEvent, w: &mut Window, cx: &mut App, a: &Article| match &on_event {
             Some(h) => h(ev, w, cx),
             None => apply_event(cx, a, ev, opts.read_only),
@@ -129,7 +147,7 @@ impl RenderOnce for Card {
         let hover_shadow = theme::shadow_md(theme_mode);
         let (border, border_strong) = (t.border, t.border_strong);
         let mut card = div()
-            .id(part_id(a.id, ""))
+            .id(part_id(ns, a.id, ""))
             .test_support()
             .relative()
             .flex()
@@ -162,13 +180,20 @@ impl RenderOnce for Card {
                 );
             }
         }
-        card.child(thumb(&a, &t))
-            .child(body(&a, opts, &t, theme_mode, emit))
+        card.child(thumb(&a, ns, &t))
+            .child(body(&a, ns, opts, &t, theme_mode, emit))
     }
 }
 
 /// `cardStyles.body` and everything in it.
-fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> impl IntoElement {
+fn body(
+    a: &Article,
+    ns: &str,
+    opts: CardOpts,
+    t: &Tokens,
+    _theme: Theme,
+    emit: Emit,
+) -> impl IntoElement {
     let accent = t.dot_for(&a.accent);
     let meta = div()
         .flex()
@@ -185,7 +210,7 @@ fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> i
         .children(accent.map(|c| dot(c, 8.)))
         .child(
             div()
-                .id(part_id(a.id, "source"))
+                .id(part_id(ns, a.id, "source"))
                 .min_w_0()
                 .truncate()
                 .text_color(t.text_2)
@@ -213,7 +238,7 @@ fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> i
     // lines so a degenerate headline can't stretch the card.
     let size = if opts.use_serif { 19. } else { 17. };
     let mut headline = div()
-        .id(part_id(a.id, "title"))
+        .id(part_id(ns, a.id, "title"))
         .test_support()
         .min_w_0()
         .mb(px(10.))
@@ -230,7 +255,7 @@ fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> i
     // An empty summary leaves no element (and no 14 px margin) behind.
     let summary = (!a.summary.trim().is_empty()).then(|| {
         div()
-            .id(part_id(a.id, "summary"))
+            .id(part_id(ns, a.id, "summary"))
             .test_support()
             .min_w_0()
             .mb(px(14.))
@@ -249,7 +274,7 @@ fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> i
         };
         let (emit, a) = (emit.clone(), a.clone());
         icon_button(
-            part_id(a.id, "bookmark"),
+            part_id(ns, a.id, "bookmark"),
             if a.bookmarked {
                 IconName::BookmarkFilled
             } else {
@@ -270,7 +295,7 @@ fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> i
     let open = {
         let (emit, a) = (emit, a.clone());
         let has_url = !a.url.is_empty();
-        let b = icon_button(part_id(a.id, "open"), IconName::External, 13., false, t)
+        let b = icon_button(part_id(ns, a.id, "open"), IconName::External, 13., false, t)
             .size(px(26.))
             .test_support()
             .aria_label("Open in browser");
@@ -299,7 +324,7 @@ fn body(a: &Article, opts: CardOpts, t: &Tokens, _theme: Theme, emit: Emit) -> i
         .text_color(t.text_3)
         .children((!a.read).then(|| {
             div()
-                .id(part_id(a.id, "unread-dot"))
+                .id(part_id(ns, a.id, "unread-dot"))
                 .test_support()
                 .flex_none()
                 .size(px(7.))
@@ -333,7 +358,7 @@ fn dot(color: Hsla, d: f32) -> gpui_kit::Div {
 }
 
 /// `cardStyles.thumb`: the cover image, or a decorative placeholder.
-fn thumb(a: &Article, t: &Tokens) -> impl IntoElement {
+fn thumb(a: &Article, ns: &str, t: &Tokens) -> impl IntoElement {
     let label = div()
         .absolute()
         .bottom(px(8.))
@@ -349,7 +374,7 @@ fn thumb(a: &Article, t: &Tokens) -> impl IntoElement {
         .text_color(t.text_3)
         .child(format!("cover · {}", a.category_label).to_uppercase());
     let frame = div()
-        .id(part_id(a.id, "thumb"))
+        .id(part_id(ns, a.id, "thumb"))
         .test_support()
         .relative()
         .flex()
@@ -361,8 +386,8 @@ fn thumb(a: &Article, t: &Tokens) -> impl IntoElement {
         .border_b_1()
         .border_color(t.border);
     let placeholder_of = {
-        let (a, t) = (a.clone(), *t);
-        move || placeholder(&a, &t)
+        let (a, t, ns) = (a.clone(), *t, ns.to_string());
+        move || placeholder(&a, &ns, &t)
     };
     match a.image_url.as_deref().filter(|u| !u.is_empty()) {
         Some(url) => {
@@ -370,7 +395,7 @@ fn thumb(a: &Article, t: &Tokens) -> impl IntoElement {
             frame
                 .child(
                     img(url.to_string())
-                        .id(part_id(a.id, "image"))
+                        .id(part_id(ns, a.id, "image"))
                         .absolute()
                         .inset_0()
                         .size_full()
@@ -391,11 +416,11 @@ fn thumb(a: &Article, t: &Tokens) -> impl IntoElement {
 /// The decorative thumb for feeds without an image: a pattern picked by
 /// `id % 5` in the category color, with the source's initials on top.
 /// Fills its parent.
-fn placeholder(a: &Article, t: &Tokens) -> impl IntoElement {
+fn placeholder(a: &Article, ns: &str, t: &Tokens) -> impl IntoElement {
     let color = t.dot_for(&a.accent).unwrap_or(t.text_3);
     let kind = Pattern::of(a.id);
     div()
-        .id(part_id(a.id, "placeholder"))
+        .id(part_id(ns, a.id, "placeholder"))
         .test_support()
         .absolute()
         .inset_0()

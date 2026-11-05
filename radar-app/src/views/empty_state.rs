@@ -1,7 +1,5 @@
 //! Port of `src/views/EmptyState.jsx`: a dashed placeholder box with an
-//! icon, a serif title and a message. Saved and Archive use it (Task 10).
-
-#![allow(dead_code)] // first caller: the Saved and Archive views (Task 10)
+//! icon, a serif title and a message. Saved and Archive use it.
 
 use crate::components::icon::{Icon, IconName};
 use crate::theme::{self, Tokens};

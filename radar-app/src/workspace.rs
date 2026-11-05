@@ -17,7 +17,8 @@ use crate::app_model::AppModel;
 use crate::components::icon::{Icon, IconName};
 use crate::components::{header, sidebar, tweaks};
 use crate::theme::{self, Tokens};
-use crate::views::briefing;
+use crate::views::archive::ArchiveView;
+use crate::views::{archive, briefing, saved};
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -44,6 +45,8 @@ pub struct Workspace {
     pub search_open: bool,
     pub tweaks_open: bool,
     pub sources_intent: Option<SourcesIntent>,
+    /// Drill-in state of the Archive view.
+    pub archive: ArchiveView,
     focus: FocusHandle,
 }
 
@@ -99,6 +102,7 @@ impl Workspace {
             search_open: false,
             tweaks_open: false,
             sources_intent: None,
+            archive: ArchiveView::default(),
             focus,
         }
     }
@@ -118,6 +122,10 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = AppModel::global(cx);
+        // The Archive selection lives only while its view is shown.
+        if entity.read(cx).model.prefs.view != View::Archive {
+            self.archive.selected_id = None;
+        }
         let app = entity.read(cx);
         let t = *theme::t(cx);
         let prefs = &app.model.prefs;
@@ -134,7 +142,7 @@ impl Render for Workspace {
                     .id("content")
                     .flex_1()
                     .overflow_y_scroll()
-                    .child(content(prefs.view, app, window, cx)),
+                    .child(content(prefs.view, &self.archive, app, window, cx)),
             );
         let tweaks = if self.tweaks_open {
             tweaks::panel(app, cx).into_any_element()
@@ -177,10 +185,18 @@ impl Render for Workspace {
 }
 
 /// Routed content. Each view's real page replaces its placeholder here in
-/// a later task (saved/archive 10, sources/categories 11, settings 12).
-fn content(view: View, app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
+/// a later task (sources/categories 11, settings 12).
+fn content(
+    view: View,
+    archive_view: &ArchiveView,
+    app: &AppModel,
+    window: &Window,
+    cx: &Context<Workspace>,
+) -> Div {
     match view {
         View::Briefing => briefing::render(app, window, cx),
+        View::Saved => saved::render(app, window, cx),
+        View::Archive => archive::render(archive_view, app, window, cx),
         other => briefing::page_frame(header::view_title(other), []),
     }
 }

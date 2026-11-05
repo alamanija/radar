@@ -58,6 +58,28 @@ pub fn relative_time_ms(ms: Option<i64>, now_ms: i64) -> String {
     format!("{}mo ago", d / 30)
 }
 
+/// Archive row/heading date (`formatRunAt` in `ArchiveView.jsx`):
+/// `Today · 9:05 AM`, `Yesterday · 9:05 AM`, else
+/// `Wednesday, November 5 · 9:05 AM`, in local time relative to `now`.
+/// An unparseable `iso` is returned unchanged (JS would show "Invalid
+/// Date"; the raw text at least says what the archive holds).
+pub fn format_run_at(iso: &str, now: DateTime<Local>) -> String {
+    let Ok(d) = DateTime::parse_from_rfc3339(iso) else {
+        return iso.to_string();
+    };
+    let d = d.with_timezone(&Local);
+    let time = d.format("%-I:%M %p");
+    let day = d.date_naive();
+    let today = now.date_naive();
+    if day == today {
+        format!("Today · {time}")
+    } else if today.pred_opt() == Some(day) {
+        format!("Yesterday · {time}")
+    } else {
+        format!("{} · {time}", d.format("%A, %B %-d"))
+    }
+}
+
 /// Truncate to `max` chars, ending with an ellipsis when cut.
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
@@ -186,5 +208,37 @@ mod tests {
         assert_eq!(truncate("", 5), "");
         assert_eq!(truncate("abcde", 5), "abcde");
         assert_eq!(truncate("abcdef", 5), "abcd…");
+    }
+
+    #[test]
+    fn format_run_at_today_yesterday_older_and_invalid() {
+        let now = Local.with_ymd_and_hms(2026, 11, 5, 15, 0, 0).unwrap();
+        let at = |y, mo, d, h, mi| {
+            Local
+                .with_ymd_and_hms(y, mo, d, h, mi, 0)
+                .unwrap()
+                .to_rfc3339()
+        };
+        assert_eq!(
+            format_run_at(&at(2026, 11, 5, 9, 5), now),
+            "Today · 9:05 AM"
+        );
+        assert_eq!(
+            format_run_at(&at(2026, 11, 5, 0, 0), now),
+            "Today · 12:00 AM"
+        );
+        assert_eq!(
+            format_run_at(&at(2026, 11, 4, 23, 30), now),
+            "Yesterday · 11:30 PM"
+        );
+        assert_eq!(
+            format_run_at(&at(2026, 11, 3, 13, 0), now),
+            "Tuesday, November 3 · 1:00 PM"
+        );
+        assert_eq!(
+            format_run_at(&at(2025, 12, 31, 8, 9), now),
+            "Wednesday, December 31 · 8:09 AM"
+        );
+        assert_eq!(format_run_at("not a date", now), "not a date");
     }
 }

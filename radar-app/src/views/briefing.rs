@@ -49,6 +49,16 @@ pub fn page_frame(
     title: impl Into<SharedString>,
     children: impl IntoIterator<Item = AnyElement>,
 ) -> Div {
+    page_frame_with(None, title, children)
+}
+
+/// [`page_frame`] with an element above the title (the Archive "All
+/// briefings" link).
+pub fn page_frame_with(
+    lead: Option<AnyElement>,
+    title: impl Into<SharedString>,
+    children: impl IntoIterator<Item = AnyElement>,
+) -> Div {
     let title: SharedString = title.into();
     div()
         .w_full()
@@ -57,6 +67,7 @@ pub fn page_frame(
         .pt(px(24.))
         .px(px(GUTTER))
         .pb(px(80.))
+        .children(lead)
         .child(
             div()
                 .id("content-title")
@@ -69,6 +80,23 @@ pub fn page_frame(
                 .child(title),
         )
         .children(children)
+}
+
+/// `viewStyles.subtitle`: the muted line under the title. `id` is also
+/// its accessible label's owner.
+pub fn view_subtitle(
+    id: &'static str,
+    text: impl Into<SharedString>,
+    t: &Tokens,
+) -> impl IntoElement {
+    let text: SharedString = text.into();
+    div()
+        .id(id)
+        .test_support()
+        .aria_label(text.clone())
+        .mb(px(22.))
+        .text_color(t.text_2)
+        .child(text)
 }
 
 /// Columns of `repeat(auto-fill, minmax(320px, 1fr))` with a 14 px gap in
@@ -454,7 +482,7 @@ pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
     let grid = prefs.view_mode == ViewMode::Grid;
     let body = if m.scanning {
         if grid {
-            grid_box(window, prefs.sidebar_collapsed)
+            grid_box("briefing-grid", window, prefs.sidebar_collapsed)
                 .children((0..SKELETON_CARDS).map(SkeletonCard::new))
                 .into_any_element()
         } else {
@@ -467,7 +495,7 @@ pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
             .cloned()
             .collect();
         if grid {
-            grid_box(window, prefs.sidebar_collapsed)
+            grid_box("briefing-grid", window, prefs.sidebar_collapsed)
                 .children(filtered.iter().map(|a| Card::new(a, opts)))
                 .into_any_element()
         } else {
@@ -480,7 +508,8 @@ pub fn render(app: &AppModel, window: &Window, cx: &Context<Workspace>) -> Div {
 }
 
 /// The card grid container, sized for the current window.
-fn grid_box(
+pub fn grid_box(
+    id: impl Into<gpui_kit::ElementId>,
     window: &Window,
     sidebar_collapsed: bool,
 ) -> impl gpui_kit::ParentElement + IntoElement {
@@ -492,7 +521,7 @@ fn grid_box(
     let avail = f32::from(window.viewport_size().width) - sidebar;
     let width = avail.min(MAX_WIDTH) - 2. * GUTTER;
     div()
-        .id("briefing-grid")
+        .id(id)
         .test_support()
         .grid()
         .grid_cols(grid_columns(width))
