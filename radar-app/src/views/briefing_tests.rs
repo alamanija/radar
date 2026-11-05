@@ -3,7 +3,8 @@
 
 use crate::workspace::shell_tests::{article, boot, category, Shell};
 use chrono::{Duration as Dur, Utc};
-use gpui_kit::TestAppContext;
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{AppContext as _, TestAppContext};
 use httpmock::prelude::*;
 use radar_core::auth::{AuthConfig, Session, Tokens};
 use radar_core::keychain::{KeyStore, MemKeyStore, CLERK_OAUTH_USER};
@@ -102,7 +103,9 @@ fn subtitle_carries_the_counts_and_last_run(cx: &mut TestAppContext) {
     });
     assert_eq!(
         s.label(cx, "briefing-subtitle").as_deref(),
-        Some("Your briefing surfaced 3 articles across 1 source · 2 unread · updated 2h ago.")
+        Some(
+            "Your briefing surfaced 3 articles across 1 source · 3 new · 2 unread · updated 2h ago."
+        )
     );
     // The counts live in the subtitle only.
     assert!(!s.exists(cx, "stat-fetched"));
@@ -141,14 +144,15 @@ fn no_chips_without_categories(cx: &mut TestAppContext) {
 fn grid_vs_list_follows_prefs(cx: &mut TestAppContext) {
     let s = boot(cx);
     three_articles(&s, cx);
-    assert!(s.exists(cx, "briefing-grid"));
+    // No run history: every article is new.
+    assert!(s.exists(cx, "briefing-new-grid"));
     assert!(s.exists(cx, "card-1"));
-    assert!(!s.exists(cx, "briefing-list"));
+    assert!(!s.exists(cx, "briefing-new-list"));
 
     s.edit(cx, |m| m.prefs.view_mode = ViewMode::List);
-    assert!(s.exists(cx, "briefing-list"));
+    assert!(s.exists(cx, "briefing-new-list"));
     assert!(s.exists(cx, "row-1"));
-    assert!(!s.exists(cx, "briefing-grid"));
+    assert!(!s.exists(cx, "briefing-new-grid"));
     assert!(!s.exists(cx, "card-1"));
 }
 
@@ -159,13 +163,13 @@ fn long_list_is_virtualized(cx: &mut TestAppContext) {
         m.prefs.view_mode = ViewMode::List;
         m.articles = (1..=200).map(|i| article(i, "tools", false)).collect();
     });
-    assert!(s.exists(cx, "briefing-vlist"));
+    assert!(s.exists(cx, "briefing-new-vlist"));
     assert!(s.exists(cx, "row-1"));
     assert!(!s.exists(cx, "row-200"), "off-screen rows must not render");
 
     // Up to 50 rows render directly.
     s.edit(cx, |m| m.articles.truncate(50));
-    assert!(!s.exists(cx, "briefing-vlist"));
+    assert!(!s.exists(cx, "briefing-new-vlist"));
     assert!(s.exists(cx, "row-50"));
 }
 
@@ -330,12 +334,12 @@ fn subtitle_follows_the_briefing_state(cx: &mut TestAppContext) {
     three_articles(&s, cx);
     assert_eq!(
         s.label(cx, "briefing-subtitle").as_deref(),
-        Some("Your briefing surfaced 3 articles across 1 source · 2 unread.")
+        Some("Your briefing surfaced 3 articles across 1 source · 3 new · 2 unread.")
     );
     s.edit(cx, |m| m.articles[2].source = "Other".into());
     assert_eq!(
         s.label(cx, "briefing-subtitle").as_deref(),
-        Some("Your briefing surfaced 3 articles across 2 sources · 2 unread.")
+        Some("Your briefing surfaced 3 articles across 2 sources · 3 new · 2 unread.")
     );
 }
 
@@ -557,4 +561,116 @@ fn cards_show_live_time_and_the_current_category_label(cx: &mut TestAppContext) 
     });
     assert_eq!(s.label(cx, "card-1-time").as_deref(), Some("3d ago"));
     assert_eq!(s.label(cx, "card-1-category").as_deref(), Some("RENAMED"));
+}
+
+/// An archived run at `hours_ago` holding `ids` (category "packaging").
+fn past_run(id: i64, hours_ago: i64, ids: &[u64]) -> Archive {
+    Archive {
+        id,
+        run_at: (Utc::now() - Dur::hours(hours_ago)).to_rfc3339(),
+        articles: ids
+            .iter()
+            .map(|&i| article(i, "packaging", false))
+            .collect(),
+        errors: vec![],
+    }
+}
+
+/// Whether `child` is laid out inside `parent`.
+fn inside(s: &Shell, cx: &mut TestAppContext, child: &'static str, parent: &'static str) -> bool {
+    cx.update_window(s.window, |_, window, cx| {
+        window.render_frame(cx);
+        let (c, p) = (window.find(child).bounds(), window.find(parent).bounds());
+        c.left() >= p.left()
+            && c.right() <= p.right()
+            && c.top() >= p.top()
+            && c.bottom() <= p.bottom()
+    })
+    .unwrap()
+}
+
+/// Articles 1–5 live (all "packaging"), 4 and 5 also in yesterday's run.
+fn five_with_history(s: &Shell, cx: &mut TestAppContext) {
+    s.edit(cx, |m| {
+        m.categories = vec![category("packaging"), category("tools")];
+        m.articles = (1..=5).map(|i| article(i, "packaging", false)).collect();
+        m.articles[0].importance = Some(5);
+        m.archives = vec![past_run(2, 2, &[1, 2, 3, 4, 5]), past_run(1, 26, &[4, 5])];
+    });
+}
+
+#[gpui_kit::test]
+fn sections_show_top_new_caught_up_and_collapsed_earlier(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    five_with_history(&s, cx);
+    assert!(inside(&s, cx, "card-1", "briefing-section-top"));
+    assert!(inside(&s, cx, "card-2", "briefing-section-new"));
+    assert_eq!(
+        s.label(cx, "briefing-caught-up").as_deref(),
+        Some("You're caught up.")
+    );
+    assert_eq!(
+        s.label(cx, "briefing-earlier-toggle").as_deref(),
+        Some("Show earlier articles (2)")
+    );
+    assert!(!s.exists(cx, "card-4"), "Earlier starts collapsed");
+
+    s.click(cx, "briefing-earlier-toggle");
+    assert!(inside(&s, cx, "card-4", "briefing-section-earlier"));
+    assert_eq!(
+        s.label(cx, "briefing-earlier-toggle").as_deref(),
+        Some("Hide earlier articles")
+    );
+
+    // Leaving the view collapses it again.
+    s.edit(cx, |m| m.prefs.view = View::Saved);
+    s.edit(cx, |m| m.prefs.view = View::Briefing);
+    assert!(!s.exists(cx, "card-4"));
+}
+
+#[gpui_kit::test]
+fn a_run_with_nothing_new_says_so(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    five_with_history(&s, cx);
+    s.edit(cx, |m| m.archives[1] = past_run(1, 26, &[1, 2, 3, 4, 5]));
+    assert_eq!(
+        s.label(cx, "briefing-caught-up").as_deref(),
+        Some("Nothing new since your last briefing.")
+    );
+    assert!(!s.exists(cx, "briefing-section-new"));
+    assert!(!s.exists(cx, "briefing-section-top"));
+    assert_eq!(
+        s.label(cx, "briefing-earlier-toggle").as_deref(),
+        Some("Show earlier articles (5)")
+    );
+}
+
+#[gpui_kit::test]
+fn a_filter_hiding_all_new_articles_still_says_caught_up(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    five_with_history(&s, cx);
+    s.edit(cx, |m| {
+        m.articles[3].category = "tools".into();
+        m.active_category = "tools".into();
+    });
+    assert!(!s.exists(cx, "briefing-section-new"));
+    assert_eq!(
+        s.label(cx, "briefing-caught-up").as_deref(),
+        Some("You're caught up.")
+    );
+}
+
+#[gpui_kit::test]
+fn subtitle_counts_new_articles(cx: &mut TestAppContext) {
+    let s = boot(cx);
+    three_articles(&s, cx);
+    s.edit(cx, |m| {
+        m.archives = vec![past_run(2, 2, &[1, 2, 3]), past_run(1, 24, &[2])]
+    });
+    assert_eq!(
+        s.label(cx, "briefing-subtitle").as_deref(),
+        Some(
+            "Your briefing surfaced 3 articles across 1 source · 2 new · 2 unread · updated 2h ago."
+        )
+    );
 }

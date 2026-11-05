@@ -14,6 +14,7 @@ use super::form::{Pill, PillStyle};
 use super::onboarding;
 use crate::app_model::AppModel;
 use crate::components::card::{Card, CardOpts};
+use crate::components::icon::{Icon, IconName};
 use crate::components::row::{cell, grid_row, Col, Row};
 use crate::components::sidebar;
 use crate::components::skeleton::{SkeletonCard, SkeletonRow};
@@ -119,12 +120,14 @@ fn rich(text: String, bold: Option<std::ops::Range<usize>>, t: &Tokens) -> Style
 }
 
 /// The summary line below the greeting; the second value is the same
-/// sentence without markup. `last_run` ("2h ago") is appended when known.
+/// sentence without markup. `new_count` shows when non-zero, `last_run`
+/// ("2h ago") when known.
 fn subtitle(
     scanning: bool,
     articles: &[Article],
     show_tutorial: bool,
     last_run: Option<String>,
+    new_count: usize,
     t: &Tokens,
 ) -> (AnyElement, String) {
     let unread = articles.iter().filter(|a| !a.read).count();
@@ -152,7 +155,13 @@ fn subtitle(
         let updated = last_run
             .map(|r| format!(" · updated {r}"))
             .unwrap_or_default();
-        let text = format!("{lead}{n} across {sources} source{plural} · {unread} unread{updated}.");
+        let fresh = if new_count > 0 {
+            format!(" · {new_count} new")
+        } else {
+            String::new()
+        };
+        let text =
+            format!("{lead}{n} across {sources} source{plural}{fresh} · {unread} unread{updated}.");
         (text, Some(lead.len()..lead.len() + n.len()))
     };
     let el = rich(text.clone(), bold, t).into_any_element();
@@ -297,9 +306,7 @@ fn filter_bar(m: &RadarModel, t: &Tokens, cx: &Context<Workspace>) -> impl IntoE
     let any_unread = m.briefing_articles(None).iter().any(|a| !a.read);
     let mark_all = Pill::new("briefing-mark-all-read", "Mark all read")
         .on_click(cx.listener(|ws, _, _, cx| {
-            // Caught up: the unread-only list empties instead of keeping
-            // what was just marked.
-            ws.briefing.reset();
+            ws.briefing.forget_kept();
             AppModel::global(cx).update(cx, |m, cx| m.mark_all_read(cx));
         }))
         .enabled(any_unread)
@@ -358,17 +365,21 @@ fn list_head(t: &Tokens) -> Div {
         .child(cell(Col::Actions))
 }
 
-/// The article list; virtualized above [`VIRTUAL_MIN`] rows.
+/// One section's article list (`briefing-{prefix}-list`); virtualized above
+/// [`VIRTUAL_MIN`] rows (`briefing-{prefix}-vlist`).
 fn list(
+    prefix: &str,
     articles: Vec<Article>,
     window: &Window,
     t: &Tokens,
     cx: &Context<Workspace>,
 ) -> AnyElement {
     let head = list_head(t);
+    let list_id = SharedString::from(format!("briefing-{prefix}-list"));
+    let vlist_id = SharedString::from(format!("briefing-{prefix}-vlist"));
     if articles.len() <= VIRTUAL_MIN {
         return list_box(t)
-            .id("briefing-list")
+            .id(list_id)
             .test_support()
             .child(head)
             .children(articles.iter().map(|a| Row::new(a, false)))
@@ -381,7 +392,7 @@ fn list(
     let articles = Rc::new(articles);
     let rows = v_virtual_list(
         cx.entity(),
-        "briefing-vlist",
+        vlist_id.clone(),
         sizes,
         move |_, range, _, _| {
             articles[range]
@@ -391,22 +402,117 @@ fn list(
         },
     );
     list_box(t)
-        .id("briefing-list")
+        .id(list_id)
         .test_support()
         .child(head)
-        .child(
-            div()
-                .id("briefing-vlist")
-                .test_support()
-                .h(height)
-                .child(rows),
-        )
+        .child(div().id(vlist_id).test_support().h(height).child(rows))
         .into_any_element()
+}
+
+/// One briefing section (`briefing-section-{prefix}`): an optional heading
+/// and its articles as a grid or a list.
+#[allow(clippy::too_many_arguments)]
+fn section(
+    prefix: &str,
+    heading: Option<String>,
+    articles: Vec<&Article>,
+    grid: bool,
+    opts: CardOpts,
+    sidebar_collapsed: bool,
+    window: &Window,
+    t: &Tokens,
+    cx: &Context<Workspace>,
+) -> AnyElement {
+    let articles: Vec<Article> = articles.into_iter().cloned().collect();
+    let body = if grid {
+        grid_box(
+            SharedString::from(format!("briefing-{prefix}-grid")),
+            window,
+            sidebar_collapsed,
+        )
+        .children(articles.iter().map(|a| Card::new(a, opts)))
+        .into_any_element()
+    } else {
+        list(prefix, articles, window, t, cx)
+    };
+    div()
+        .id(SharedString::from(format!("briefing-section-{prefix}")))
+        .test_support()
+        .mb(px(22.))
+        .children(heading.map(|h| {
+            div()
+                .mb(px(10.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.text_2)
+                .child(h)
+        }))
+        .child(body)
+        .into_any_element()
+}
+
+/// The line after the new articles: "You're caught up.", or "Nothing new
+/// since your last briefing." when the run brought nothing new at all.
+fn caught_up(nothing_new: bool, t: &Tokens) -> impl IntoElement {
+    let text = if nothing_new {
+        "Nothing new since your last briefing."
+    } else {
+        "You're caught up."
+    };
+    div()
+        .id("briefing-caught-up")
+        .test_support()
+        .aria_label(text)
+        .mb(px(16.))
+        .text_size(px(13.))
+        .text_color(t.text_3)
+        .child(text)
+}
+
+/// "Earlier · M": expands and collapses the Earlier section.
+fn earlier_toggle(
+    count: usize,
+    open: bool,
+    t: &Tokens,
+    cx: &Context<Workspace>,
+) -> impl IntoElement {
+    let label = if open {
+        "Hide earlier articles".to_string()
+    } else {
+        format!("Show earlier articles ({count})")
+    };
+    let text = t.text;
+    div()
+        .id("briefing-earlier-toggle")
+        .test_support()
+        .aria_label(label)
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .mb(px(12.))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(t.text_2)
+        .hover(move |s| s.text_color(text))
+        .child(
+            Icon::new(if open {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .size(px(12.)),
+        )
+        .child(format!("Earlier · {count}"))
+        .on_click(cx.listener(|ws, _, _, cx| {
+            ws.briefing.toggle_earlier();
+            cx.notify();
+        }))
 }
 
 fn skeleton_list(t: &Tokens) -> AnyElement {
     list_box(t)
-        .id("briefing-list")
+        .id("briefing-skeleton-list")
         .test_support()
         .children((0..SKELETON_ROWS).map(SkeletonRow::new))
         .into_any_element()
@@ -416,15 +522,29 @@ fn skeleton_list(t: &Tokens) -> AnyElement {
 /// that were unread when you started looking, so one you open stays put
 /// instead of vanishing. Taken again when the category or the briefing run
 /// changes, and dropped when the filter goes off or the view is left.
+/// Also whether the Earlier section is expanded (collapsed on each visit).
 #[derive(Default)]
 pub struct BriefingView {
     /// `(category, last run, ids)`.
     kept: Option<(String, Option<i64>, HashSet<u64>)>,
+    earlier_open: bool,
 }
 
 impl BriefingView {
+    /// Leaving the view: forget the kept articles and collapse Earlier.
     pub fn reset(&mut self) {
         self.kept = None;
+        self.earlier_open = false;
+    }
+
+    /// "Mark all read": the unread-only list empties instead of keeping
+    /// what was just marked.
+    pub fn forget_kept(&mut self) {
+        self.kept = None;
+    }
+
+    pub fn toggle_earlier(&mut self) {
+        self.earlier_open ^= true;
     }
 
     /// Call on every frame the briefing is shown.
@@ -473,7 +593,10 @@ pub fn render(
     let last_run = m
         .last_run_at_ms()
         .map(|ms| text::relative_time_ms(Some(ms), Utc::now().timestamp_millis()));
-    let (subtitle_el, subtitle_text) = subtitle(m.scanning, articles, show_tutorial, last_run, &t);
+    // Before filters: the subtitle and the caught-up line describe the run.
+    let new_count = m.new_ids().len();
+    let (subtitle_el, subtitle_text) =
+        subtitle(m.scanning, articles, show_tutorial, last_run, new_count, &t);
     let subtitle = div()
         .id("briefing-subtitle")
         .test_support()
@@ -508,18 +631,34 @@ pub fn render(
             skeleton_list(&t)
         }
     } else {
-        let filtered: Vec<Article> = m
-            .briefing_articles(view.kept())
-            .into_iter()
-            .cloned()
-            .collect();
-        if grid {
-            grid_box("briefing-grid", window, prefs.sidebar_collapsed)
-                .children(filtered.iter().map(|a| Card::new(a, opts)))
-                .into_any_element()
-        } else {
-            list(filtered, window, &t, cx)
+        let s = m.briefing_sections(view.kept());
+        let collapsed = prefs.sidebar_collapsed;
+        let mut parts: Vec<AnyElement> = Vec::new();
+        if !s.top.is_empty() {
+            let heading = Some("Top stories".to_string());
+            parts.push(section(
+                "top", heading, s.top, grid, opts, collapsed, window, &t, cx,
+            ));
         }
+        if !s.new.is_empty() {
+            let heading = Some(format!("New · {}", s.new.len()));
+            parts.push(section(
+                "new", heading, s.new, grid, opts, collapsed, window, &t, cx,
+            ));
+        }
+        if !articles.is_empty() {
+            parts.push(caught_up(new_count == 0, &t).into_any_element());
+        }
+        if !s.earlier.is_empty() {
+            let open = view.earlier_open;
+            parts.push(earlier_toggle(s.earlier.len(), open, &t, cx).into_any_element());
+            if open {
+                parts.push(section(
+                    "earlier", None, s.earlier, grid, opts, collapsed, window, &t, cx,
+                ));
+            }
+        }
+        div().children(parts).into_any_element()
     };
     children.push(body);
 
