@@ -2,6 +2,7 @@
 name = "radar-app"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.99"
 license.workspace = true
 publish.workspace = true
 description = "Radar desktop app (GPUI Kit)"
@@ -28,6 +29,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["io-util", "time", "rt"] }
 tray-icon = "0.26"
 url = "2"
+cargo-packager-updater = { version = "0.2.3", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 base64 = "0.22"
@@ -45,3 +47,23 @@ widestring = "1"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
+
+# Packaged by `cargo packager -p radar-app --release` (CI: release.yml).
+# Signing reads CARGO_PACKAGER_SIGN_PRIVATE_KEY and
+# CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD from the environment. The version
+# comes from `[workspace.package]` in the root Cargo.toml.
+[package.metadata.packager]
+product-name = "Radar"
+identifier = "com.radar.dev"
+before-packaging-command = "cargo build --release -p radar-app"
+icons = [
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/128x128@2x.png",
+    "assets/icons/icon.icns",
+    "assets/icons/icon.ico",
+]
+
+[package.metadata.packager.nsis]
+# Same per-user install the Tauri build used.
+installer-mode = "currentUser"

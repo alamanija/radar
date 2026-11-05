@@ -1,20 +1,23 @@
-# Signed release workflow.
+# Signed release workflow (cargo-packager).
 #
-# Trigger: push a tag matching `v*.*.*` (e.g. `git tag v0.2.0 && git push --tags`).
-# Output: a GitHub Release with per-platform installers + a `latest.json` manifest.
+# Trigger: push a tag matching `v*.*.*`. Cut one with:
+#     cargo set-version --bump patch   # cargo-edit; edits [workspace.package] in the root Cargo.toml
+#     git commit -am "chore: release vX.Y.Z" && git tag vX.Y.Z
+#     git push && git push --tags
+# Output: a GitHub Release with the per-platform installers, their `.sig`
+# files, and a `latest.json` manifest (scripts/make-latest-json.sh) that both
+# the installed Tauri builds and this app's cargo-packager-updater read.
 #
-# Platform matrix: Apple Silicon macOS + Windows. Intentionally skipping
-# Intel macOS (all Macs sold since 2020 are Apple Silicon) and Linux (no
-# users asking for it yet). Add either back when a real user needs it —
-# each extra target is another ~15-25 min of wall time per release.
+# Platform matrix: Apple Silicon macOS (app + dmg) and Windows x86_64 (nsis).
+# Intel macOS and Linux are intentionally not built; there is no updater
+# entry for them, so those installs stop receiving updates.
 #
-# Prerequisites (one-time, per repo):
-#   1. Generate an Ed25519 keypair:
-#        npm run tauri signer generate -- -w ~/.tauri/radar.key
-#      (Copy the public key into `src-tauri/tauri.conf.json > plugins.updater.pubkey`.)
-#   2. Add these repository secrets (Settings → Secrets and variables → Actions):
-#        TAURI_SIGNING_PRIVATE_KEY          - contents of ~/.tauri/radar.key
-#        TAURI_SIGNING_PRIVATE_KEY_PASSWORD - password you chose at generate time
+# Repository secrets (Settings > Secrets and variables > Actions). They are the
+# existing Tauri minisign key; cargo-packager reads the same key format:
+#   TAURI_SIGNING_PRIVATE_KEY          - contents of ~/.tauri/radar.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - the password chosen at generate time
+# macOS builds are unsigned/not notarized until Apple Developer secrets are
+# added (Gatekeeper warns on first launch: right-click > Open).
 
 name: Release
 
@@ -24,83 +27,109 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  # Creates the draft once, so the matrix jobs only upload to it.
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # A tag that disagrees with the crate version would ship a build that
+      # offers itself as an update forever.
+      - name: Check tag matches the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p;}' Cargo.toml)
+          if [ "v$version" != "$TAG" ]; then
+            echo "tag $TAG != Cargo.toml version v$version" >&2
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --draft --title "Radar $TAG" \
+            --notes "See the assets below to download."
+
   build:
-    permissions:
-      contents: write
+    needs: draft
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            rust-targets: 'aarch64-apple-darwin'
+            formats: app,dmg
           - platform: windows-latest
-            args: ''
-            rust-targets: ''
+            formats: nsis
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # radar-app declares rust-version 1.99 (gpui-pre needs it).
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          targets: ${{ matrix.rust-targets }}
+          toolchain: '1.99.1'
 
-      # Cache the whole workspace (`.`) not just `src-tauri`. The root
-      # `Cargo.toml` is a workspace with `src-tauri` + `radar-server` as
-      # members; they share `./target`. Pointing the cache at the root
-      # means a single cache entry per platform covers everything and
-      # hits warm on subsequent releases.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: '. -> target'
           cache-on-failure: true
 
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
 
-      - name: Install JS deps
-        run: npm ci
-
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v0
+      - name: Package and sign
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code-signing + notarization. Intentionally NOT set here —
-          # an empty APPLE_CERTIFICATE is worse than an absent one (Tauri
-          # tries to import the empty string and fails). Re-add these env
-          # vars once you enroll in the Apple Developer program and
-          # populate the matching repo secrets:
-          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
-          #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-          # Until then, macOS builds are unsigned — Gatekeeper will show a
-          # warning on first launch; users work around with right-click → Open.
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Radar ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download.'
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo packager -p radar-app --release --formats ${{ matrix.formats }}
 
-  # After every matrix job uploads its artifacts + partial manifest, consolidate
-  # the `latest.json` and publish the release. `tauri-action` handles the per-
-  # platform entries; this job just flips the draft to published so the
-  # updater-facing `releases/latest/download/latest.json` URL resolves.
+      # Everything the packager wrote for this release: installers, the
+      # `.app.tar.gz` updater archive, and the `.sig` files.
+      - name: Upload artifacts to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s nullglob
+          files=(target/release/*-setup.exe target/release/*.dmg target/release/*.app.tar.gz target/release/*.sig)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "packager produced no artifacts" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  # After every matrix job has uploaded: build `latest.json` from the signed
+  # artifacts and flip the draft to published, so the updater-facing
+  # `releases/latest/download/latest.json` URL resolves.
   publish:
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v5
+
+      - name: Build latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir artifacts
+          gh release download "$TAG" --dir artifacts --pattern '*-setup.exe*' --pattern '*.app.tar.gz*'
+          scripts/make-latest-json.sh "${TAG#v}" "$REPO" artifacts > latest.json
+          cat latest.json
+          gh release upload "$TAG" latest.json --clobber
+
       - name: Publish release
         uses: actions/github-script@v7
         with:

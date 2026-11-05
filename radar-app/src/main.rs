@@ -25,7 +25,7 @@ use gpui_kit::{
     px, size, AnyWindowHandle, App, AppContext as _, Bounds, Global, KeyBinding, Menu, MenuItem,
     QuitMode, TitlebarOptions, WindowBounds, WindowOptions,
 };
-use platform::{autostart, notify, tray};
+use platform::{autostart, notify, tray, updater};
 use radar_core::auth::{AuthConfig, Session};
 use radar_core::keychain::OsKeyStore;
 use single_instance::{InstanceName, Message, Role};
@@ -109,6 +109,7 @@ fn main() {
         listen_for_instances(rx, cx);
         scheduler::spawn(cx);
         scheduler::run_at_launch(cx);
+        updater::check_on_launch(cx);
         if !autostart {
             open_main_window(cx);
         }
@@ -124,6 +125,14 @@ fn os_hooks() -> Hooks {
         tray: Rc::new(tray::set_status),
         wake: Some(Arc::new(radar_core::schedule_wake::sync_schedule_wake)),
         autostart: autostart::Backend::os(),
+        updater: match updater::Packager::production() {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                log::warn!("[updater] disabled: {e}");
+                Arc::new(updater::Inert)
+            }
+        },
+        quit: Rc::new(|cx| cx.quit()),
     }
 }
 

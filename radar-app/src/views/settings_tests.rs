@@ -553,3 +553,86 @@ fn sync_indicator_states(cx: &mut TestAppContext) {
         Some("400 on /sync/prefs")
     );
 }
+
+/// The Updates control follows the updater states: check, available,
+/// download, ready, restart. A fake client stands in for GitHub.
+#[gpui_kit::test]
+fn updates_control_walks_the_update_flow(cx: &mut TestAppContext) {
+    let s = settings(cx);
+    let fake = crate::platform::updater::Fake::default();
+    *fake.found.lock().unwrap() = Ok(Some(("0.3.0".into(), "Notes".into())));
+    let quits = Arc::new(AtomicUsize::new(0));
+    let q = quits.clone();
+    s.model.update(cx, |m, _| {
+        m.hooks.updater = Arc::new(fake.clone());
+        m.hooks.quit = std::rc::Rc::new(move |_| {
+            q.fetch_add(1, SeqCst);
+        });
+    });
+    let meta = format!("v{}", env!("CARGO_PKG_VERSION"));
+    assert_eq!(s.label(cx, "settings-updates-meta"), Some(meta));
+
+    click(&s, cx, "settings-updates-check");
+    wait_until(cx, |cx| {
+        cx.update_window(s.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("settings-updates-download").is_some()
+        })
+        .unwrap()
+    });
+    assert_eq!(
+        s.label(cx, "settings-updates-status"),
+        Some("v0.3.0 available".into())
+    );
+
+    click(&s, cx, "settings-updates-download");
+    wait_until(cx, |cx| {
+        cx.update_window(s.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("settings-updates-restart").is_some()
+        })
+        .unwrap()
+    });
+    assert_eq!(
+        s.label(cx, "settings-updates-status"),
+        Some("Ready to install".into())
+    );
+    assert_eq!(fake.calls(), ["check", "download", "install"]);
+
+    click(&s, cx, "settings-updates-restart");
+    wait_until(cx, |_| quits.load(SeqCst) == 1);
+}
+
+/// A failed check shows "Check failed" with a Retry that checks again.
+#[gpui_kit::test]
+fn updates_control_failure_offers_retry(cx: &mut TestAppContext) {
+    let s = settings(cx);
+    let fake = crate::platform::updater::Fake::default();
+    *fake.found.lock().unwrap() = Err("offline".into());
+    s.model
+        .update(cx, |m, _| m.hooks.updater = Arc::new(fake.clone()));
+    click(&s, cx, "settings-updates-check");
+    wait_until(cx, |cx| {
+        cx.update_window(s.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("settings-updates-retry").is_some()
+        })
+        .unwrap()
+    });
+    assert_eq!(
+        s.label(cx, "settings-updates-status"),
+        Some("Check failed".into())
+    );
+    *fake.found.lock().unwrap() = Ok(None);
+    click(&s, cx, "settings-updates-retry");
+    wait_until(cx, |cx| {
+        cx.update_window(s.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("settings-updates-check").is_some()
+        })
+        .unwrap()
+    });
+    assert!(s
+        .label(cx, "settings-updates-meta")
+        .is_some_and(|l| l.ends_with("up to date")));
+}

@@ -4,7 +4,7 @@
 //! [`Fakes`], recording stand-ins for the model's OS and pipeline hooks.
 
 use crate::app_model::{AppModel, Hooks};
-use crate::platform::{autostart, tray};
+use crate::platform::{autostart, tray, updater};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use gpui_kit::{Entity, TestAppContext};
 use httpmock::prelude::*;
@@ -209,6 +209,8 @@ impl Fakes {
                 Ok(())
             })),
             autostart: autostart::Backend::off(),
+            updater: Arc::new(updater::Inert),
+            quit: Rc::new(|_| {}),
         }
     }
 

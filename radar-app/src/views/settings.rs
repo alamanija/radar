@@ -783,20 +783,93 @@ fn choice<T: Copy + PartialEq + 'static>(
     .render(t, [])
 }
 
-fn updates_control(t: &Tokens) -> AnyElement {
-    // `updater::State::Idle`: version meta plus "Check for updates".
-    let updater::State::Idle = updater::state();
-    let meta = format!("v{}", env!("CARGO_PKG_VERSION"));
-    controls(10.)
-        .child(
-            mono("settings-updates-meta", meta, t.text_3).font_features(theme::font_features(true)),
+/// `UpdatesControl`: one control per updater state.
+fn updates_control(state: &updater::State, t: &Tokens) -> AnyElement {
+    let act = |f: fn(&mut AppModel, &mut Context<AppModel>)| {
+        move |_: &_, _: &mut Window, cx: &mut App| {
+            AppModel::global(cx).update(cx, f);
+        }
+    };
+    let check = |m: &mut AppModel, cx: &mut Context<AppModel>| m.check_for_updates(false, cx);
+    let status = |id, text: String, color| {
+        div().text_size(px(12.)).text_color(color).child(
+            div()
+                .id(id)
+                .test_support()
+                .aria_label(SharedString::from(text.clone()))
+                .child(text),
         )
-        .child(
-            Pill::new("settings-updates-check", "Check for updates")
-                .on_click(|_, _, _| updater::check())
-                .render(t, []),
-        )
-        .into_any_element()
+    };
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let mut c = controls(6.);
+    match state {
+        updater::State::Available { version, .. } => {
+            c = c
+                .child(status(
+                    "settings-updates-status",
+                    format!("v{version} available"),
+                    t.text_2,
+                ))
+                .child(
+                    Pill::new("settings-updates-download", "Download")
+                        .on_click(act(AppModel::download_update))
+                        .render(t, []),
+                );
+        }
+        updater::State::Downloading { progress } => {
+            let pct = progress.map_or("…".to_owned(), |p| format!(" {}%", (p * 100.).round()));
+            let text = format!("Downloading{pct}");
+            c = c.child(mono("settings-updates-status", text, t.text_2));
+        }
+        updater::State::Ready => {
+            c = c
+                .child(status(
+                    "settings-updates-status",
+                    "Ready to install".into(),
+                    t.text_2,
+                ))
+                .child(
+                    Pill::new("settings-updates-restart", "Restart now")
+                        .style(PillStyle::Active)
+                        .on_click(act(AppModel::restart_to_apply))
+                        .render(t, []),
+                );
+        }
+        updater::State::Checking => {
+            c = c.child(mono("settings-updates-status", "Checking…", t.text_3));
+        }
+        updater::State::Error(e) => {
+            c = c
+                .child(status(
+                    "settings-updates-status",
+                    "Check failed".into(),
+                    t.dot[1],
+                ))
+                .child(
+                    Pill::new("settings-updates-retry", "Retry")
+                        .title(Some(e.clone()))
+                        .on_click(act(check))
+                        .render(t, []),
+                );
+        }
+        updater::State::Idle | updater::State::UpToDate => {
+            let meta = match state {
+                updater::State::UpToDate => format!("{version} · up to date"),
+                _ => version,
+            };
+            c = controls(10.)
+                .child(
+                    mono("settings-updates-meta", meta, t.text_3)
+                        .font_features(theme::font_features(true)),
+                )
+                .child(
+                    Pill::new("settings-updates-check", "Check for updates")
+                        .on_click(act(check))
+                        .render(t, []),
+                );
+        }
+    }
+    c.into_any_element()
 }
 
 pub fn render(view: &SettingsView, app: &AppModel, cx: &Context<Workspace>) -> Div {
@@ -1007,7 +1080,7 @@ pub fn render(view: &SettingsView, app: &AppModel, cx: &Context<Workspace>) -> D
                 "Radar checks on launch and when you ask. Downloads are signed and verified \
                  before install.",
             ),
-            updates_control(&t),
+            updates_control(&app.update, &t),
             &t,
         )],
         &t,

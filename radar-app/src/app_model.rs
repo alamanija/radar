@@ -20,7 +20,7 @@
 //!   [`Hooks`]. The model starts with [`Hooks::inert`]; `main.rs` installs
 //!   the real ones with [`AppModel::set_hooks`]. Tests install fakes.
 
-use crate::platform::{autostart, tray};
+use crate::platform::{autostart, tray, updater};
 use crate::scheduler::{self, WakeFn};
 use crate::{bridge, theme};
 use chrono::{DateTime, Local};
@@ -87,6 +87,11 @@ pub struct Hooks {
     pub wake: Option<WakeFn>,
     /// The login item (`platform::autostart`).
     pub autostart: autostart::Backend,
+    /// The update client (`updater::Packager`).
+    pub updater: Arc<dyn updater::Backend>,
+    /// Quits the app (`cx.quit()`), once the updater has started the
+    /// relaunch.
+    pub quit: Rc<dyn Fn(&mut App)>,
 }
 
 impl Hooks {
@@ -109,6 +114,8 @@ impl Hooks {
             tray: Rc::new(|_, _| {}),
             wake: None,
             autostart: autostart::Backend::off(),
+            updater: Arc::new(updater::Inert),
+            quit: Rc::new(|_| {}),
         }
     }
 }
@@ -153,6 +160,8 @@ pub struct AppModel {
     /// OS and pipeline integrations ([`Hooks::inert`] until `main.rs`
     /// installs the real ones).
     pub hooks: Hooks,
+    /// Where the update flow stands (Settings > Updates).
+    pub update: updater::State,
     /// The tray title and tooltip last pushed.
     tray_shown: Option<tray::Status>,
     /// Daily-slot, run-at-launch and wake-sync bookkeeping.
@@ -220,6 +229,7 @@ impl AppModel {
             server_base: radar_core::sync::server_url(),
             sign_in_impl: sync_lifecycle::browser_sign_in(),
             hooks: Hooks::inert(),
+            update: updater::State::default(),
             tray_shown: None,
             schedule: scheduler::State::default(),
             sync_sleep: None,
