@@ -419,18 +419,33 @@ fn content_routes_on_view(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn search_placeholder_closes_on_scrim_click_and_escape(cx: &mut TestAppContext) {
+fn search_palette_closes_on_scrim_click_and_escape(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    use gpui_kit::test::TestEventExt as _;
     let s = boot(cx);
-    assert!(!s.exists(cx, "search-scrim"));
-    cx.dispatch_action(s.window, OpenSearch);
-    assert!(s.exists(cx, "search-scrim"));
-    s.click(cx, "search-scrim");
     assert!(!s.ws.read_with(cx, |w, _| w.search_open));
-    assert!(!s.exists(cx, "search-scrim"));
+    cx.dispatch_action(s.window, OpenSearch);
+    cx.run_until_parked();
+    assert!(s.ws.read_with(cx, |w, _| w.search_open));
+    cx.update_window(s.window, |_, window, cx| {
+        assert!(window.has_active_dialog(cx));
+        let at = gpui_kit::point(gpui_kit::px(4.), gpui_kit::px(500.));
+        window.pointer_down(at, gpui_kit::MouseButton::Left, cx);
+        window.pointer_up(at, gpui_kit::MouseButton::Left, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!s.ws.read_with(cx, |w, _| w.search_open));
+    cx.update_window(s.window, |_, window, cx| {
+        assert!(!window.has_active_dialog(cx))
+    })
+    .unwrap();
 
     cx.dispatch_action(s.window, OpenSearch);
+    cx.run_until_parked();
     cx.update_window(s.window, |_, window, cx| window.press("escape", cx))
         .unwrap();
+    cx.run_until_parked();
     assert!(!s.ws.read_with(cx, |w, _| w.search_open));
 }
 

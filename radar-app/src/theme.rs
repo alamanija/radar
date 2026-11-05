@@ -206,6 +206,10 @@ pub fn apply(cx: &mut App, prefs: &Prefs) {
         th.primary = tk.accent;
         th.primary_foreground = tk.surface;
         th.ring = tk.accent;
+        // The kit paints a highlighted list row (the search palette's
+        // selected result) with `accent`: the prototype's `--accent-soft`.
+        th.accent = tk.accent_soft;
+        th.accent_foreground = tk.accent_text;
         th.muted_foreground = tk.text_2;
         th.popover = tk.surface;
         th.popover_foreground = tk.text;

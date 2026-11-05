@@ -14,19 +14,20 @@
 //!   focuses itself when the window opens, so its bindings work at once.
 
 use crate::app_model::AppModel;
-use crate::components::icon::{Icon, IconName};
+use crate::components::search_palette::SearchPalette;
 use crate::components::{header, sidebar, tweaks};
-use crate::theme::{self, Tokens};
+use crate::theme;
 use crate::views::archive::ArchiveView;
 use crate::views::categories::{self, CategoriesView};
 use crate::views::settings::{self, SettingsView};
 use crate::views::sources::{self, SourcesView};
 use crate::views::{archive, briefing, saved};
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, hsla, px, relative, App, BoxShadow, Context, Div, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyBinding, KeyBindingContextPredicate, KeyDownEvent, ParentElement as _, Render,
+    div, hsla, px, relative, App, Context, Div, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyBinding, KeyBindingContextPredicate, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled, Window,
 };
 use radar_core::types::{Theme, View};
@@ -127,13 +128,19 @@ impl Workspace {
         }
     }
 
-    /// The search bar and `OpenSearch`. The palette itself is Task 13.
-    pub fn open_search(&mut self, cx: &mut Context<Self>) {
+    /// The search bar and `OpenSearch`: opens the palette dialog, unless it
+    /// is already up (no second dialog stacks on top of it).
+    pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_open && window.has_active_dialog(cx) {
+            return;
+        }
         self.search_open = true;
+        SearchPalette::open(cx.weak_entity(), window, cx);
         cx.notify();
     }
 
-    fn close_search(&mut self, cx: &mut Context<Self>) {
+    /// Every palette dismissal path ends here.
+    pub(crate) fn close_search(&mut self, cx: &mut Context<Self>) {
         self.search_open = false;
         cx.notify();
     }
@@ -191,24 +198,15 @@ impl Render for Workspace {
         } else {
             tweaks::fab(prefs.theme, cx).into_any_element()
         };
-        let search = self.search_open.then(|| search_placeholder(window, &t, cx));
 
         div()
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|ws, _: &OpenSearch, _, cx| ws.open_search(cx)))
+            .on_action(cx.listener(|ws, _: &OpenSearch, window, cx| ws.open_search(window, cx)))
             .on_action(|_: &RunBriefing, _, cx| run_briefing(cx))
             .on_action(|_: &ToggleSidebar, _, cx| toggle_sidebar(cx))
             .on_action(|_: &ToggleTheme, _, cx| toggle_theme(cx))
-            .when(self.search_open, |root| {
-                root.on_key_down(cx.listener(|ws, e: &KeyDownEvent, _, cx| {
-                    if e.keystroke.key == "escape" {
-                        ws.close_search(cx);
-                        cx.stop_propagation();
-                    }
-                }))
-            })
             .relative()
             .size_full()
             .flex()
@@ -222,7 +220,11 @@ impl Render for Workspace {
             .children((!prefs.sidebar_collapsed).then(|| sidebar::render(app, cx)))
             .child(main)
             .child(tweaks)
-            .children(search)
+            // The palette dialog has no visible scrim of its own (the kit
+            // keeps that flag private); dim the window beneath it.
+            .when(self.search_open, |root| {
+                root.child(div().absolute().inset_0().bg(hsla(0., 0., 0., 0.35)))
+            })
     }
 }
 
@@ -242,58 +244,6 @@ fn content(
         View::Categories => categories::render(&ws.categories, app, cx),
         View::Settings => settings::render(&ws.settings, app, cx),
     }
-}
-
-/// Stand-in for the search palette (Task 13): the palette's scrim and
-/// input row. Clicking outside closes it; so does Escape (handled on the
-/// root, which holds focus).
-fn search_placeholder(window: &Window, t: &Tokens, cx: &Context<Workspace>) -> impl IntoElement {
-    let panel = div()
-        .w(px(600.))
-        .max_w(relative(0.9))
-        .bg(t.surface)
-        .border_1()
-        .border_color(t.border_strong)
-        .rounded(t.radius_lg)
-        .shadow(vec![BoxShadow::new(
-            px(0.),
-            px(20.),
-            hsla(0., 0., 0., 0.25),
-        )
-        .blur_radius(px(30.))])
-        .overflow_hidden()
-        // Clicks inside the panel must not reach the scrim.
-        .occlude()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .px(px(16.))
-                .py(px(14.))
-                .text_color(t.text_2)
-                .child(Icon::new(IconName::Search).size(px(16.)))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(px(15.))
-                        .text_color(t.text_3)
-                        .child("Search articles, sources…"),
-                ),
-        );
-    div()
-        .id("search-scrim")
-        .test_support()
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_start()
-        .justify_center()
-        .pt(window.viewport_size().height * 0.1)
-        .bg(hsla(0., 0., 0., 0.35))
-        .occlude()
-        .on_click(cx.listener(|ws, _, _, cx| ws.close_search(cx)))
-        .child(panel)
 }
 
 #[cfg(test)]

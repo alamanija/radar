@@ -9,6 +9,7 @@ pub mod card;
 pub mod header;
 pub mod icon;
 pub mod row;
+pub mod search_palette;
 pub mod sidebar;
 pub mod skeleton;
 pub mod sync_indicator;

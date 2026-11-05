@@ -119,7 +119,7 @@ pub fn render(app: &AppModel, cx: &Context<Workspace>) -> impl IntoElement {
         .whitespace_nowrap()
         .overflow_hidden()
         .cursor_pointer()
-        .on_click(cx.listener(|ws, _, _, cx| ws.open_search(cx)))
+        .on_click(cx.listener(|ws, _, window, cx| ws.open_search(window, cx)))
         .child(Icon::new(IconName::Search).size(px(14.)))
         .child(
             div()
@@ -216,7 +216,7 @@ pub fn render(app: &AppModel, cx: &Context<Workspace>) -> impl IntoElement {
 }
 
 /// `headerStyles.kbd`.
-fn kbd(text: &'static str, t: &Tokens) -> Div {
+pub(crate) fn kbd(text: &'static str, t: &Tokens) -> Div {
     div()
         .ml_auto()
         .flex_none()
