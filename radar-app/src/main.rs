@@ -6,6 +6,7 @@
 
 mod app_model;
 mod bridge;
+mod components;
 mod single_instance;
 mod theme;
 mod workspace;
