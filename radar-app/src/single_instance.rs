@@ -220,12 +220,34 @@ mod tests {
         }
     }
 
-    fn unique_name() -> InstanceName {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        InstanceName::for_user(&format!("com.radar.test.{}.{nanos}", std::process::id()))
+    /// A per-test socket name. Kept short: a Unix socket path must fit
+    /// `sun_path` (104 bytes on macOS), and on Unix the name's directory is
+    /// removed again on drop.
+    struct TestName(InstanceName);
+
+    impl std::ops::Deref for TestName {
+        type Target = InstanceName;
+        fn deref(&self) -> &InstanceName {
+            &self.0
+        }
+    }
+
+    impl Drop for TestName {
+        fn drop(&mut self) {
+            #[cfg(not(windows))]
+            if let Some(dir) = self.0.path.parent() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    fn unique_name() -> TestName {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        TestName(InstanceName::for_user(&format!(
+            "rt{}.{n}",
+            std::process::id()
+        )))
     }
 
     #[test]
