@@ -39,9 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load radar-server/.env regardless of CWD — CARGO_MANIFEST_DIR is the
     // crate root at compile time, so `cargo run -p radar-server` works from
     // anywhere in the workspace.
-    let _ = dotenvy::from_path(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env"),
-    );
+    let _ = dotenvy::from_path(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".env"));
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()
@@ -51,8 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let database_url =
-        std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL not set")?;
+    let database_url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL not set")?;
     // Port resolution: `PORT` is the de-facto PaaS convention (Render, Fly,
     // Heroku, Railway all set this automatically). `SERVER_PORT` is our
     // local-dev override; 8787 is the final fallback.
@@ -61,10 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8787);
-    let clerk_jwks_url =
-        std::env::var("CLERK_JWKS_URL").map_err(|_| "CLERK_JWKS_URL not set")?;
-    let clerk_issuer =
-        std::env::var("CLERK_ISSUER").map_err(|_| "CLERK_ISSUER not set")?;
+    let clerk_jwks_url = std::env::var("CLERK_JWKS_URL").map_err(|_| "CLERK_JWKS_URL not set")?;
+    let clerk_issuer = std::env::var("CLERK_ISSUER").map_err(|_| "CLERK_ISSUER not set")?;
     let non_empty = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let mut issuers = vec![clerk_issuer];
     if let Some(i) = non_empty("CLERK_OAUTH_ISSUER") {
@@ -119,13 +114,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route(
             "/sync/article-states",
-            get(article_states::get_article_states)
-                .patch(article_states::patch_article_state),
+            get(article_states::get_article_states).patch(article_states::patch_article_state),
         )
-        .route(
-            "/sync/prefs",
-            get(prefs::get_prefs).put(prefs::put_prefs),
-        )
+        .route("/sync/prefs", get(prefs::get_prefs).put(prefs::put_prefs))
         .layer(middleware::from_fn_with_state(
             limiter.clone(),
             rate_limit::layer,
@@ -175,7 +166,13 @@ fn build_cors() -> Result<CorsLayer, Box<dyn std::error::Error>> {
 
     Ok(CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::PUT, Method::PATCH, Method::POST, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::PUT,
+            Method::PATCH,
+            Method::POST,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
@@ -189,7 +186,9 @@ fn build_cors() -> Result<CorsLayer, Box<dyn std::error::Error>> {
 async fn shutdown_signal() {
     use tokio::signal;
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install ^C handler");
+        signal::ctrl_c()
+            .await
+            .expect("failed to install ^C handler");
     };
     #[cfg(unix)]
     let terminate = async {

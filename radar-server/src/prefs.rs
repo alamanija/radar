@@ -20,12 +20,11 @@ pub async fn get_prefs(
     State(state): State<AppState>,
     user: ClerkUser,
 ) -> AppResult<impl IntoResponse> {
-    let row: Option<(serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-        "select prefs, updated_at from user_prefs where clerk_user_id = $1",
-    )
-    .bind(&user.id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<(serde_json::Value, DateTime<Utc>)> =
+        sqlx::query_as("select prefs, updated_at from user_prefs where clerk_user_id = $1")
+            .bind(&user.id)
+            .fetch_optional(&state.db)
+            .await?;
 
     match row {
         Some((prefs, updated_at)) => {

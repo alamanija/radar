@@ -55,23 +55,31 @@ fn cfg(client: Option<&str>, oauth_iss: bool) -> VerifyConfig {
 #[tokio::test]
 async fn accepts_oauth_jwt_with_matching_client_id() {
     let t = sign(json!({"iss": ISS, "client_id": CLIENT, "scope": "openid profile"}));
-    let u = verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.unwrap();
+    let u = verify(&t, &jwks(), &cfg(Some(CLIENT), false))
+        .await
+        .unwrap();
     assert_eq!(u.id, "user_1");
 }
 
 #[tokio::test]
 async fn rejects_oauth_jwt_with_other_client_id() {
     let t = sign(json!({"iss": ISS, "client_id": "other", "scope": "openid"}));
-    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.is_err());
+    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false))
+        .await
+        .is_err());
     // azp-only OAuth token (has scope) with the wrong value is rejected too.
     let t = sign(json!({"iss": ISS, "azp": "other", "scope": "openid"}));
-    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.is_err());
+    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false))
+        .await
+        .is_err());
 }
 
 #[tokio::test]
 async fn accepts_session_jwt_without_client_id() {
     let t = sign(json!({"iss": ISS, "azp": "http://localhost:1420"}));
-    let u = verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.unwrap();
+    let u = verify(&t, &jwks(), &cfg(Some(CLIENT), false))
+        .await
+        .unwrap();
     assert_eq!(u.id, "user_1");
 }
 
@@ -85,11 +93,15 @@ async fn rejects_wrong_issuer() {
 async fn accepts_oauth_issuer_when_configured() {
     let t = sign(json!({"iss": OAUTH_ISS, "client_id": CLIENT, "scope": "openid"}));
     assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), true)).await.is_ok());
-    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.is_err());
+    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false))
+        .await
+        .is_err());
 }
 
 #[tokio::test]
 async fn rejects_oauth_jwt_missing_client_identifiers() {
     let t = sign(json!({"iss": ISS, "scope": "openid profile"}));
-    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false)).await.is_err());
+    assert!(verify(&t, &jwks(), &cfg(Some(CLIENT), false))
+        .await
+        .is_err());
 }

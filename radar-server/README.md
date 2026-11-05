@@ -1,8 +1,8 @@
 # radar-server
 
 Axum sync backend for the Radar desktop app. Identity is owned by Clerk —
-clients obtain a session JWT via Clerk's frontend SDK, and this server
-verifies the JWT against Clerk's JWKS on every authed request. There's no
+the native client signs in with Clerk OAuth (see below), and this server
+verifies the resulting token against Clerk's JWKS on every authed request. There's no
 users table, no sessions table, no server-side session cookies; the Clerk
 `sub` claim is the user key.
 
@@ -10,7 +10,6 @@ users table, no sessions table, no server-side session cookies; the Clerk
 
 1. **Create a Clerk application.** In https://dashboard.clerk.com create an
    application (free tier is fine). From the dashboard, copy:
-   - **Publishable key** — frontend-side, used by the Tauri client.
    - **JWKS URL** — `https://<your-app>.clerk.accounts.dev/.well-known/jwks.json`.
    - **Issuer** — `https://<your-app>.clerk.accounts.dev`.
 
@@ -32,19 +31,20 @@ users table, no sessions table, no server-side session cookies; the Clerk
    ```
    Migrations run automatically on startup. The server listens on `0.0.0.0:8787`.
 
-## Building the Tauri client with Clerk
+## Running the desktop client against this server
 
-The frontend reads credentials via `VITE_*` env vars. Copy `.env.example`
-at the repo root to `.env` and fill in:
+`radar-app` reads its config from the environment (runtime first, then the
+value baked in at compile time). Copy the names from the repo-root
+`.env.example` and export them in your shell:
 
 ```
-VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
-VITE_RADAR_SERVER_URL=http://127.0.0.1:8787   # optional, this is the default
+RADAR_SERVER_URL=http://127.0.0.1:8787     # optional, this is the default
+RADAR_CLERK_FRONTEND_API=https://<your-app>.clerk.accounts.dev
+RADAR_CLERK_CLIENT_ID=<oauth client id>    # from the OAuth application below
 ```
 
-Then `npm run tauri:dev`. The Tauri side no longer participates in auth —
-the webview owns the Clerk session, and the frontend calls this server
-directly attaching `Authorization: Bearer ${clerkSessionJwt}`.
+Then `cargo +1.99.1 run -p radar-app`. The client attaches
+`Authorization: Bearer <clerk-oauth-access-token>` to every `/sync/*` call.
 
 ## Endpoints
 
@@ -81,7 +81,7 @@ against). See `migrations/` for details.
 
 The native Radar desktop app signs in with Clerk OAuth (PKCE, loopback
 redirect) and sends the resulting **Clerk OAuth access token** as the bearer.
-Session JWTs from the old webview client are still accepted. Both are RS256,
+Session JWTs from the old webview (Tauri) client are still accepted. Both are RS256,
 signed by the same instance key (same JWKS), validated for `exp` and `iss`;
 `aud` is not checked. Identity is `sub`.
 

@@ -16,6 +16,10 @@
 # existing Tauri minisign key; cargo-packager reads the same key format:
 #   TAURI_SIGNING_PRIVATE_KEY          - contents of ~/.tauri/radar.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - the password chosen at generate time
+# Repository variables (same page, "Variables" tab; public values, baked into
+# the binary at compile time):
+#   RADAR_CLERK_FRONTEND_API - Clerk Frontend API URL (https://<instance>.clerk...)
+#   RADAR_CLERK_CLIENT_ID    - the Clerk OAuth application's client id
 # macOS builds are unsigned/not notarized until Apple Developer secrets are
 # added (Gatekeeper warns on first launch: right-click > Open).
 
@@ -89,6 +93,11 @@ jobs:
 
       - name: Package and sign
         env:
+          # Compile-time client config (read with option_env! in radar-core).
+          # Public values; the first came from the old .env.production.
+          RADAR_SERVER_URL: https://radar-server-kjsc.onrender.com
+          RADAR_CLERK_FRONTEND_API: ${{ vars.RADAR_CLERK_FRONTEND_API }}
+          RADAR_CLERK_CLIENT_ID: ${{ vars.RADAR_CLERK_CLIENT_ID }}
           CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo packager -p radar-app --release --formats ${{ matrix.formats }}

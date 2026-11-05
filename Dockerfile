@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 #
 # Build the `radar-server` Axum binary into a small Debian runtime image.
-# The Tauri crate (`src-tauri`) is part of the same Cargo workspace but is
-# never compiled here — `cargo build -p radar-server` only pulls the
-# server's dependency subtree.
+# The desktop app (`radar-app`) and `radar-core` are part of the same Cargo
+# workspace but are never compiled here — `cargo build -p radar-server` only
+# pulls the server's dependency subtree. Every member's manifest must still be
+# in the build context, so don't exclude them in `.dockerignore`.
 #
 # `migrations/` is embedded into the binary at compile time via
 # `sqlx::migrate!()`, so the folder must be present while cargo runs.
@@ -14,11 +15,11 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /app
 
-# Copy the whole workspace. `.dockerignore` excludes the JS frontend,
-# build artefacts, and node_modules so the context stays small.
+# Copy the whole workspace. `.dockerignore` excludes build artefacts, secrets
+# and the desktop app's assets so the context stays small.
 COPY . .
 
-# `-p radar-server` makes cargo ignore the `src-tauri` member entirely.
+# `-p radar-server` makes cargo ignore the desktop-app members entirely.
 RUN cargo build --release -p radar-server --bin radar-server
 
 # --------------------------------------------------------------------------

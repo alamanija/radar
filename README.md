@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./src-tauri/icons/128x128@2x.png" alt="Radar" width="96" height="96" />
+  <img src="./radar-app/assets/icons/128x128@2x.png" alt="Radar" width="96" height="96" />
 </p>
 
 <h1 align="center">Radar</h1>
@@ -9,7 +9,7 @@
 [![Release](https://github.com/alamanija/radar/actions/workflows/release.yml/badge.svg)](https://github.com/alamanija/radar/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/alamanija/radar?include_prereleases&sort=semver)](https://github.com/alamanija/radar/releases/latest)
 [![License](https://img.shields.io/github/license/alamanija/radar)](./LICENSE.md)
-[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24c8db?logo=tauri&logoColor=white)](https://tauri.app)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/alamanija)
 
 Radar watches the RSS feeds you care about, groups every morning's stories into categories you define, and asks Claude to write short, editorially-neutral summaries tuned to your professional lens. You open the app, you see what actually matters, you move on.
@@ -20,7 +20,7 @@ Radar watches the RSS feeds you care about, groups every morning's stories into 
 - **BYO AI.** Your Anthropic API key stays in your system keychain and never leaves the device.
 - **Sync across devices.** Sign in with Clerk and your sources, categories, archives, profile, and read state flow between every Mac/PC you use.
 - **Offline-first.** Edits while offline are queued and replay automatically once the network returns. `If-Match`-based conflict detection keeps multi-device edits honest.
-- **Signed auto-updates.** Every release is Ed25519-signed and verified on-device before install.
+- **Signed auto-updates.** Every release is minisign-signed and verified on-device before install.
 - **Keyboard-first UI.** `⌘K` / `Ctrl+K` searches your live briefing, every archive, and every source.
 
 ## Download
@@ -42,34 +42,33 @@ This goes away entirely once the macOS and Windows builds are code-signed — pl
 
 ## Development
 
-Radar is a Cargo workspace with a Tauri desktop shell, a React frontend, and an Axum sync server.
+Radar is a Cargo workspace with a native GPUI Kit desktop app (`radar-app`), a UI-free core library (`radar-core`) and an Axum sync server (`radar-server`).
 
 ### Prerequisites
 
-- Node.js 22 (see [`.nvmrc`](./.nvmrc))
-- Rust stable
+- Rust 1.99 or newer (`radar-app` needs it for GPUI); the repo is built and tested with `cargo +1.99.1`
 - Docker (for local Postgres)
-- A Clerk dev instance ([`clerk.com`](https://clerk.com))
+- A Clerk dev instance ([`clerk.com`](https://clerk.com)) with an OAuth application (see [`radar-server/README.md`](./radar-server/README.md))
 
 ### Quick start
 
 ```bash
-# 1. Install JS deps
-npm install
-
-# 2. Configure environment
-cp .env.example .env                       # fill VITE_CLERK_PUBLISHABLE_KEY
+# 1. Configure the sync server
 cp radar-server/.env.example radar-server/.env   # fill CLERK_JWKS_URL + CLERK_ISSUER
 
-# 3. Start Postgres
+# 2. Start Postgres
 docker compose up -d
 
-# 4. Start the sync server (migrations run automatically)
-cargo run -p radar-server
+# 3. Start the sync server (migrations run automatically)
+cargo +1.99.1 run -p radar-server
 
-# 5. Launch the desktop app
-npm run tauri:dev
+# 4. Launch the desktop app (see .env.example for the RADAR_* variables)
+export RADAR_CLERK_FRONTEND_API=https://<your-instance>.clerk.accounts.dev
+export RADAR_CLERK_CLIENT_ID=<oauth client id>
+cargo +1.99.1 run -p radar-app
 ```
+
+Signing in is optional; without the Clerk variables the app still works locally. Run the tests with `cargo +1.99.1 test --workspace`.
 
 Full project layout, sync architecture, and release process are documented in [`CLAUDE.md`](./CLAUDE.md).
 
@@ -77,12 +76,11 @@ Full project layout, sync architecture, and release process are documented in [`
 
 | Layer | Tech |
 |---|---|
-| Desktop shell | Tauri 2 |
-| Frontend | React 18 · Vite 6 |
-| Auth | Clerk (JWT) |
+| Desktop app | Rust · GPUI Kit |
+| Auth | Clerk (OAuth, PKCE) |
 | Sync server | Axum · sqlx · Postgres |
 | Summarization | Anthropic Claude (`claude-opus-4-7`) |
-| Updates | `tauri-plugin-updater` + signed GitHub Releases |
+| Updates | `cargo-packager` + `cargo-packager-updater`, signed GitHub Releases |
 | License | MIT |
 
 ## Support the project

@@ -70,13 +70,10 @@ impl RateLimiter {
             inner.last_sweep = now;
         }
 
-        let bucket = inner
-            .buckets
-            .entry(key.to_string())
-            .or_insert(Bucket {
-                tokens: self.capacity,
-                last_refill: now,
-            });
+        let bucket = inner.buckets.entry(key.to_string()).or_insert(Bucket {
+            tokens: self.capacity,
+            last_refill: now,
+        });
         let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
         bucket.tokens = (bucket.tokens + elapsed * self.refill_rate).min(self.capacity);
         bucket.last_refill = now;
