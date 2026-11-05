@@ -38,6 +38,22 @@ pub fn on_rt<T: Send + 'static>(
     }
 }
 
+/// Runs blocking `f` (keychain I/O) on the runtime's blocking pool, never
+/// the UI thread, and resolves to its output. A panic inside `f` is resumed
+/// in the awaiting task.
+pub fn on_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> impl Future<Output = T> {
+    let handle = radar_core::runtime().spawn_blocking(f);
+    async move {
+        match handle.await {
+            Ok(v) => v,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => panic!("blocking task cancelled: {e}"),
+        }
+    }
+}
+
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REDIRECTS: usize = 10;
 

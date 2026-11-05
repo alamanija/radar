@@ -11,6 +11,7 @@ pub mod icon;
 pub mod row;
 pub mod sidebar;
 pub mod skeleton;
+pub mod sync_indicator;
 pub mod toggle;
 pub mod tweaks;
 

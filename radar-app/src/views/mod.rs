@@ -7,6 +7,7 @@ pub mod empty_state;
 pub mod form;
 pub mod onboarding;
 pub mod saved;
+pub mod settings;
 pub mod sources;
 
 #[cfg(test)]
@@ -16,3 +17,7 @@ mod saved_archive_tests;
 #[cfg(test)]
 #[path = "sources_categories_tests.rs"]
 mod sources_categories_tests;
+
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod settings_tests;

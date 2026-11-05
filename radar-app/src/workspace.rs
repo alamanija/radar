@@ -19,6 +19,7 @@ use crate::components::{header, sidebar, tweaks};
 use crate::theme::{self, Tokens};
 use crate::views::archive::ArchiveView;
 use crate::views::categories::{self, CategoriesView};
+use crate::views::settings::{self, SettingsView};
 use crate::views::sources::{self, SourcesView};
 use crate::views::{archive, briefing, saved};
 use gpui_kit::base::TestSupportExt as _;
@@ -54,6 +55,8 @@ pub struct Workspace {
     pub sources: SourcesView,
     /// Edit-row state of the Categories view.
     pub categories: CategoriesView,
+    /// Inputs and API-key control state of the Settings view.
+    pub settings: SettingsView,
     focus: FocusHandle,
 }
 
@@ -103,6 +106,13 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&AppModel::global(cx), |_, _, cx| cx.notify())
             .detach();
+        // Coming back to the window drains the sync queue (JS: `online`).
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                AppModel::global(cx).update(cx, |m, _| m.drain_now());
+            }
+        })
+        .detach();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
@@ -112,6 +122,7 @@ impl Workspace {
             archive: ArchiveView::default(),
             sources: SourcesView::default(),
             categories: CategoriesView::default(),
+            settings: SettingsView::default(),
             focus,
         }
     }
@@ -151,6 +162,11 @@ impl Render for Workspace {
         } else {
             self.sources = SourcesView::default();
         }
+        if shown == View::Settings {
+            self.settings.prepare(window, cx);
+        } else {
+            self.settings = SettingsView::default();
+        }
         let app = entity.read(cx);
         let t = *theme::t(cx);
         let prefs = &app.model.prefs;
@@ -165,6 +181,7 @@ impl Render for Workspace {
             .child(
                 div()
                     .id("content")
+                    .test_support()
                     .flex_1()
                     .overflow_y_scroll()
                     .child(content(prefs.view, self, app, window, cx)),
@@ -209,8 +226,7 @@ impl Render for Workspace {
     }
 }
 
-/// Routed content. Each view's real page replaces its placeholder here in
-/// a later task (sources/categories 11, settings 12).
+/// Routed content: the page of the current view.
 fn content(
     view: View,
     ws: &Workspace,
@@ -224,7 +240,7 @@ fn content(
         View::Archive => archive::render(&ws.archive, app, window, cx),
         View::Sources => sources::render(&ws.sources, app, cx),
         View::Categories => categories::render(&ws.categories, app, cx),
-        other => briefing::page_frame(header::view_title(other), []),
+        View::Settings => settings::render(&ws.settings, app, cx),
     }
 }
 

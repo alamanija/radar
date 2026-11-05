@@ -41,8 +41,11 @@ pub struct Pill {
     pub aria: Option<SharedString>,
     pub style: PillStyle,
     pub icon: Option<IconName>,
+    pub icon_size: f32,
     pub title: Option<SharedString>,
     pub on_click: Option<Click>,
+    /// Inline `opacity: 0.5; cursor: not-allowed` (a visibly disabled pill).
+    pub dimmed: bool,
 }
 
 impl Pill {
@@ -53,8 +56,10 @@ impl Pill {
             aria: None,
             style: PillStyle::Plain,
             icon: None,
+            icon_size: 13.,
             title: None,
             on_click: None,
+            dimmed: false,
         }
     }
 
@@ -70,6 +75,18 @@ impl Pill {
 
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    pub fn icon_size(mut self, size: f32) -> Self {
+        self.icon_size = size;
+        self
+    }
+
+    /// Disabled with the inline `opacity: 0.5; cursor: not-allowed` look
+    /// (any click handler is ignored).
+    pub fn dimmed(mut self) -> Self {
+        self.dimmed = true;
         self
     }
 
@@ -136,10 +153,15 @@ impl Pill {
             }
             None => el,
         };
-        el.children(self.icon.map(|i| Icon::new(i).size(px(13.))))
+        let (el, on_click) = if self.dimmed {
+            (el.opacity(0.5).cursor_not_allowed(), None)
+        } else {
+            (el, self.on_click)
+        };
+        el.children(self.icon.map(|i| Icon::new(i).size(px(self.icon_size))))
             .child(self.label)
             .children(children)
-            .when_some(self.on_click, |el, f| el.on_click(f))
+            .when_some(on_click, |el, f| el.on_click(f))
     }
 }
 

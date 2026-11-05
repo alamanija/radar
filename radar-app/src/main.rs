@@ -7,7 +7,10 @@
 mod app_model;
 mod bridge;
 mod components;
+mod platform;
 mod single_instance;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod views;
 mod workspace;
@@ -83,7 +86,9 @@ fn main() {
             if session.is_none() {
                 log::info!("[auth] Clerk not configured; running local-only");
             }
-            AppModel::init(radar_core::store::default_path(), session, cx);
+            let model = AppModel::init(radar_core::store::default_path(), session, cx);
+            // A session restored from the keychain syncs right away.
+            model.update(cx, |m, cx| m.start_sync(cx));
             register_app_actions(cx, |cx| cx.quit());
             workspace::init(cx);
             listen_for_instances(rx, cx);
@@ -155,8 +160,11 @@ pub fn open_main_window(cx: &mut App) {
         ..Default::default()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        window.on_window_should_close(cx, |_, _| {
+        window.on_window_should_close(cx, |_, cx| {
             log::info!("[window] main window closed; staying alive");
+            // Store write now, sync push now (JS: flush on `pagehide`). The
+            // app keeps running, so the push finishes on its own.
+            drop(AppModel::global(cx).update(cx, |m, cx| m.flush_now(cx)));
             true
         });
         cx.new(|cx| Workspace::new(window, cx))

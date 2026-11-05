@@ -19,6 +19,31 @@ use std::time::Duration;
 use tokio::sync::{watch, Mutex};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Used when neither the runtime nor the build environment names a server.
+pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8787";
+
+/// The radar-server base URL: runtime `RADAR_SERVER_URL`, else the value
+/// baked in at compile time, else [`DEFAULT_SERVER_URL`]. Empty values are
+/// ignored.
+pub fn server_url() -> String {
+    resolve_server_url(
+        std::env::var("RADAR_SERVER_URL").ok(),
+        option_env!("RADAR_SERVER_URL"),
+    )
+}
+
+fn resolve_server_url(runtime: Option<String>, compiled: Option<&str>) -> String {
+    runtime
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            compiled
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string())
+}
 
 /// Sync failures. Messages carry status + path only, never tokens or bodies.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,6 +497,19 @@ mod tests {
         let mut r2 = SyncedResource::<ProfileRes>::new();
         assert_send(&r2.pull(&c, &p));
         assert_send(&article_states::pull(&c));
+    }
+
+    #[test]
+    fn server_url_prefers_runtime_then_compiled_then_default() {
+        let url = |rt: Option<&str>, ct| resolve_server_url(rt.map(str::to_string), ct);
+        assert_eq!(
+            url(Some("https://rt.test"), Some("https://ct.test")),
+            "https://rt.test"
+        );
+        assert_eq!(url(Some("  "), Some("https://ct.test")), "https://ct.test");
+        assert_eq!(url(None, Some("https://ct.test")), "https://ct.test");
+        assert_eq!(url(None, Some("")), DEFAULT_SERVER_URL);
+        assert_eq!(url(None, None), "http://127.0.0.1:8787");
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Port of `src/components/Sidebar.jsx`: brand, view nav with counts,
-//! category filters, the first sources, and the profile footer.
-//!
-//! The sync indicator above the footer arrives with Task 12.
+//! category filters, the first sources, the sync indicator (signed in only)
+//! and the profile footer.
 
 use super::icon::{Icon, IconName};
+use super::sync_indicator;
 use crate::app_model::AppModel;
 use crate::theme::{self, Tokens};
 use crate::workspace::{SourcesIntent, Workspace};
@@ -181,6 +181,11 @@ pub fn render(app: &AppModel, cx: &Context<Workspace>) -> impl IntoElement {
         .border_color(t.border)
         .child(brand(&t))
         .child(scroll)
+        .children(
+            app.account
+                .is_some()
+                .then(|| sync_indicator::render(&app.sync_status, &t)),
+        )
         .child(footer(app, &t))
 }
 

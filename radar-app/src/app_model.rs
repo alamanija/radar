@@ -11,19 +11,33 @@
 //!   matching plugin-store's 100 ms autoSave). Never mutate `model` directly.
 //! - Hydration ([`AppModel::new`]) only reads the store; `ready` flips true
 //!   once it is done, and saves are gated on it.
+//! - Sign-in, sign-out and the live sync loop live in `sync_lifecycle.rs`
+//!   (a child module, so it shares this struct's private state). Every
+//!   [`update_model`](AppModel::update_model) also (re)starts the 800 ms
+//!   sync push debounce while signed in.
 
 use crate::{bridge, theme};
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use radar_core::auth::Session;
 use radar_core::ingest;
+use radar_core::keychain::KeyStore;
 use radar_core::model::{ArticleState, RadarModel};
 use radar_core::store;
+use radar_core::sync::queue::SleepFn;
 use radar_core::sync::{article_states, SyncClient, SyncStatus};
 use radar_core::types::Account;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[path = "sync_lifecycle.rs"]
+mod sync_lifecycle;
+
+#[cfg(test)]
+pub use sync_lifecycle::PUSH_DEBOUNCE;
+use sync_lifecycle::{Lifecycle, PersistedQueue, QueueMirror};
+pub use sync_lifecycle::{SignInFn, SyncResources};
 
 /// Delay between the last mutation and the write to disk.
 pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(100);
@@ -35,24 +49,54 @@ pub struct AppModel {
     pub model: RadarModel,
     /// `None` when Clerk isn't configured (`AuthConfig::from_env()` is
     /// `None`); the app then runs fully local.
-    #[allow(dead_code)] // read once sync is wired (Task 12)
     pub session: Option<Session>,
     pub account: Option<Account>,
-    /// Wired in Task 12. `Arc` so async work can hold it past a borrow.
+    /// The signed-in sync client (`None` when signed out). `Arc` so async
+    /// work can hold it past a borrow.
     pub sync: Option<Arc<SyncClient>>,
-    #[allow(dead_code)]
+    /// Latest queue status, for the sync indicator.
     pub sync_status: SyncStatus,
     /// True once hydration finished; saves are skipped before that.
     pub ready: bool,
     /// True once all five synced resources (profile, categories, sources,
-    /// archives, prefs) have resolved their sign-in pull. Task 12 sets it
-    /// when sync is wired; until then it stays false, so a signed-in
-    /// session is never `hydrated()`.
+    /// archives, prefs) have pulled for the signed-in account; cleared on
+    /// sign-out and account switch.
     pub resources_pulled: bool,
     pub store_path: PathBuf,
-    /// Persisted offline sync queue (opaque JS shape). Passed through
-    /// unchanged until sync is wired (Task 12).
-    pub sync_queue: Vec<Value>,
+    /// Sync bookkeeping (pulled / server key / etag) of the five resources.
+    pub resources: SyncResources,
+    /// Article states pulled (and overlaid) for the signed-in account.
+    pub article_states_pulled: bool,
+    /// A browser sign-in is running.
+    pub signing_in: bool,
+    /// Where the Anthropic API key lives: the OS keychain (an in-memory
+    /// store under `cfg(test)`).
+    pub key_store: Arc<dyn KeyStore>,
+    /// radar-server base URL (`radar_core::sync::server_url()`).
+    pub server_base: String,
+    /// The browser sign-in (`Session::sign_in`); tests inject failures.
+    pub sign_in_impl: SignInFn,
+    /// Backoff sleep handed to the sync client; tests use an instant one.
+    pub sync_sleep: Option<SleepFn>,
+    /// Persisted offline sync queue (the store's `sync-queue` key, opaque JS
+    /// shape), shared with the sync client's persist callback.
+    sync_queue: QueueMirror,
+    /// `sync_queue` revision included in the newest snapshot handed to a
+    /// writer.
+    saved_queue_rev: u64,
+    /// Tasks and channel of the running sync session.
+    lifecycle: Option<Lifecycle>,
+    /// Bumped on every sign-in, sign-out and account switch; results of
+    /// work started under an older epoch are dropped.
+    sync_epoch: u64,
+    /// `resources` are lent to a running pull or push.
+    resources_out: bool,
+    /// Ops waiting for `resources` to come back.
+    resource_waiters: Vec<futures::channel::oneshot::Sender<()>>,
+    /// Drained queue bodies that arrived while `resources` were lent out.
+    drained_backlog: Vec<(String, Value)>,
+    /// The keychain delete of the last sign-out (a new sign-in waits on it).
+    sign_out_task: Option<Task<()>>,
     /// The pending debounced save; replacing it cancels the previous one.
     save_task: Option<Task<()>>,
     /// Unsaved changes exist (cleared when a snapshot is taken for writing).
@@ -72,8 +116,10 @@ impl AppModel {
     /// Hydrates from `store_path`. Reads only; never writes the store.
     pub fn new(store_path: PathBuf, session: Option<Session>, _cx: &mut Context<Self>) -> Self {
         let snap = store::load(&store_path);
-        let sync_queue = snap.sync_queue.clone();
+        let sync_queue = Arc::new(Mutex::new(PersistedQueue::new(snap.sync_queue.clone())));
         let model = RadarModel::from_snapshot(snap);
+        // Startup only: nothing else uses the session yet, so this can't
+        // wait on a keychain write.
         let account = session.as_ref().and_then(Session::account);
         Self {
             model,
@@ -84,7 +130,21 @@ impl AppModel {
             ready: true,
             resources_pulled: false,
             store_path,
+            resources: SyncResources::default(),
+            article_states_pulled: false,
+            signing_in: false,
+            key_store: sync_lifecycle::default_key_store(),
+            server_base: radar_core::sync::server_url(),
+            sign_in_impl: sync_lifecycle::browser_sign_in(),
+            sync_sleep: None,
             sync_queue,
+            saved_queue_rev: 0,
+            lifecycle: None,
+            sync_epoch: 0,
+            resources_out: false,
+            resource_waiters: Vec::new(),
+            drained_backlog: Vec::new(),
+            sign_out_task: None,
             save_task: None,
             dirty: false,
             save_gen: 0,
@@ -93,14 +153,11 @@ impl AppModel {
     }
 
     /// Creates the global entity, applies the persisted theme, and flushes
-    /// pending writes on quit. Call once at startup.
+    /// pending writes (store and sync) on quit. Call once at startup.
     pub fn init(store_path: PathBuf, session: Option<Session>, cx: &mut App) -> Entity<Self> {
         let entity = cx.new(|cx| {
-            cx.on_app_quit(|this: &mut Self, _cx| {
-                this.flush_now();
-                async {}
-            })
-            .detach();
+            cx.on_app_quit(|this: &mut Self, cx| this.flush_now(cx))
+                .detach();
             Self::new(store_path, session, cx)
         });
         let prefs = entity.read(cx).model.prefs.clone();
@@ -134,6 +191,7 @@ impl AppModel {
         }
         cx.notify();
         self.schedule_save(cx);
+        self.schedule_push(cx);
         out
     }
 
@@ -143,7 +201,7 @@ impl AppModel {
         }
         self.dirty = true;
         // Dropping the previous task cancels its pending timer (or its
-        // not-yet-started write; `flush_now` and the newer task cover that,
+        // not-yet-started write; `flush_store` and the newer task cover that,
         // because a taken-but-unwritten generation keeps `save_gen` ahead of
         // `written_gen`, and `dirty` is true again).
         self.save_task = Some(cx.spawn(async move |this, cx| {
@@ -177,9 +235,14 @@ impl AppModel {
         }
         self.dirty = false;
         self.save_gen += 1;
+        let queue = {
+            let q = sync_lifecycle::lock(&self.sync_queue);
+            self.saved_queue_rev = q.rev;
+            q.items.clone()
+        };
         Some(SaveJob {
             path: self.store_path.clone(),
-            snap: self.model.to_snapshot(self.sync_queue.clone()),
+            snap: self.model.to_snapshot(queue),
             generation: self.save_gen,
             written_gen: self.written_gen.clone(),
         })
@@ -247,23 +310,28 @@ impl AppModel {
         let (Some(client), Some((id, state))) = (self.sync.clone(), out) else {
             return;
         };
-        cx.spawn(async move |_, _| {
+        cx.spawn(async move |this, cx| {
             let res =
                 bridge::on_rt(async move { article_states::patch(&client, &id, state).await });
-            if let Err(e) = res.await {
-                log::warn!("[sync] article state patch failed: {e}");
+            match res.await {
+                Ok(_) => {}
+                Err(radar_core::sync::SyncError::NotSignedIn) => {
+                    let _ = this.update(cx, |m, cx| m.check_session(cx));
+                }
+                Err(e) => log::warn!("[sync] article state patch failed: {e}"),
             }
         })
         .detach();
     }
 
-    /// Writes everything not yet on disk, synchronously (app quit).
+    /// Writes everything not yet on disk, synchronously (Task 7's quit
+    /// flush, also run by [`flush_now`](Self::flush_now)).
     ///
     /// It runs inside the quit callback, so by the time the quit future is
     /// returned there is nothing left pending: GPUI only polls quit futures
     /// for `SHUTDOWN_TIMEOUT` (200 ms), too short to trust with a large
     /// archive write.
-    fn flush_now(&mut self) {
+    fn flush_store(&mut self) {
         // Cancels a pending timer or a write that hasn't started yet.
         self.save_task = None;
         let written_gen = self.written_gen.clone();
